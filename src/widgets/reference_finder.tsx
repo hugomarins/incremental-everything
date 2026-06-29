@@ -103,10 +103,20 @@ function ReferenceFinder() {
   const [searching, setSearching] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const reqIdRef = useRef(0);
+  // The rem the picker was triggered from, captured by the command before focus
+  // moved into this widget. Excluded from results (a rem can't reference itself).
+  const sourceRemIdRef = useRef<string>('');
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    (async () => {
+      const src = await plugin.storage.getSession<string>('reference-finder-source-rem');
+      sourceRemIdRef.current = typeof src === 'string' ? src : '';
+    })();
+  }, [plugin]);
 
   // Seed the box with selected text handed off by the command (if any), then
   // select it so the user can immediately overwrite or refine it.
@@ -184,6 +194,7 @@ function ReferenceFinder() {
             numResults: 50,
           });
           for (const r of res) {
+            if (r._id === sourceRemIdRef.current) continue; // never suggest the rem itself
             if (!seen.has(r._id)) seen.set(r._id, r);
           }
         }

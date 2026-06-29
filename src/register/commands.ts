@@ -1068,6 +1068,16 @@ export async function registerCommands(plugin: ReactRNPlugin) {
       } catch { /* no selection */ }
       await plugin.storage.setSession('reference-finder-initial-query', initialQuery);
 
+      // Capture the rem the picker was triggered from (focus is still in the
+      // editor here) so the widget can exclude it from results — referencing a
+      // rem to itself is never useful and it often ranked first.
+      let sourceRemId = '';
+      try {
+        const focused = await plugin.focus.getFocusedRem();
+        if (focused?._id) sourceRemId = focused._id;
+      } catch { /* no focused rem */ }
+      await plugin.storage.setSession('reference-finder-source-rem', sourceRemId);
+
       // Open the picker at the caret. getCaretPosition can momentarily return
       // undefined right after a shortcut fires (focus settling), and returns a
       // valid rect for a collapsed caret too — so retry a few times.

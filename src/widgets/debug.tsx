@@ -717,11 +717,27 @@ function Debug() {
         return;
       }
 
-      await focusedRem.setPowerupProperty(dismissedPowerupCode, dismissedHistorySlotCode, []);
-      await focusedRem.setPowerupProperty(dismissedPowerupCode, dismissedDateSlotCode, []);
-      await focusedRem.removePowerup(dismissedPowerupCode);
+      // Suppress GlobalRemChanged during the removal below. removePowerup fires a
+      // GlobalRemChanged event; the listener pre-captures this rem's history (still
+      // present in the allIncrementalRemKey session cache) and, seeing the powerup
+      // gone with history in hand, calls transferToDismissed — which re-adds the
+      // dismissed powerup a few seconds later. Setting plugin_operation_active makes
+      // the listener skip this rem (same flag + delayed-clear pattern used by the
+      // cloze command in commands.ts).
+      await plugin.storage.setSession('plugin_operation_active', true);
+      try {
+        await focusedRem.setPowerupProperty(dismissedPowerupCode, dismissedHistorySlotCode, []);
+        await focusedRem.setPowerupProperty(dismissedPowerupCode, dismissedDateSlotCode, []);
+        await focusedRem.removePowerup(dismissedPowerupCode);
 
-      await plugin.app.toast('Cleaned dismissed powerup and its slots!');
+        await plugin.app.toast('Cleaned dismissed powerup and its slots!');
+      } finally {
+        // Clear after a delay longer than the GlobalRemChanged debounce (1000ms) so
+        // any pending event from the removePowerup write is also suppressed.
+        setTimeout(async () => {
+          await plugin.storage.setSession('plugin_operation_active', false);
+        }, 2000);
+      }
     } catch (e) {
       console.error('[CleanDismissed] Error:', e);
       await plugin.app.toast('Failed to clean dismissed powerup.');
