@@ -90,7 +90,7 @@ export async function registerPdfHighlightCSS(plugin: ReactRNPlugin) {
          highlight, so the two read apart by hue alone. Avoids inline borders, which
          CSS draws on every sliced fragment (superscripts, italics, line wraps) and
          which overlap the first glyph of each fragment. */
-      background-color: #b6ddf1 !important;
+      background-color: #8ad0f3 !important;
       padding-bottom: 2.7px;
     }
     /* High-contrast text selection inside pdfextract highlights */
@@ -115,27 +115,32 @@ export async function registerPdfHighlightCSS(plugin: ReactRNPlugin) {
       color: #ffffff !important;
     }
 
-    /* Dark mode: darken highlight backgrounds so light text stays readable */
-    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"],
-    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"] {
+    /* Dark mode: darken highlight backgrounds so light text stays readable.
+       Scoped to .rn-editor only. In the PDF viewer the highlight is a translucent
+       overlay blended over the page (whose text does NOT flip to light), so a dark
+       background muddies it — there we deliberately keep the light-mode backgrounds
+       above, which read well over the page just like RemNote's native highlight. */
+    .dark .rn-editor [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"],
+    .dark .rn-editor [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"] {
       background-color: #1e496b !important;
     }
-    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"],
-    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"] {
+    .dark .rn-editor [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"],
+    .dark .rn-editor [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"] {
       background-color: #1a5c3a !important;
     }
-    /* Dark mode: lighten the selection so it stands out on the darkened background */
-    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"] ::selection,
-    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"] ::selection,
-    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"]::selection,
-    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"]::selection {
+    /* Dark mode (editor): lighten the selection so it stands out on the darkened
+       background. The PDF viewer keeps the light-mode selection (navy/white). */
+    .dark .rn-editor [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"] ::selection,
+    .dark .rn-editor [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"] ::selection,
+    .dark .rn-editor [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"]::selection,
+    .dark .rn-editor [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"]::selection {
       background-color: #7cc4f5 !important;
       color: #06203f !important;
     }
-    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"] ::selection,
-    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"] ::selection,
-    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"]::selection,
-    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"]::selection {
+    .dark .rn-editor [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"] ::selection,
+    .dark .rn-editor [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"] ::selection,
+    .dark .rn-editor [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"]::selection,
+    .dark .rn-editor [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"]::selection {
       background-color: #6ee7a8 !important;
       color: #05381f !important;
     }
