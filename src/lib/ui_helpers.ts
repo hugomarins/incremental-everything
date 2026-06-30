@@ -88,6 +88,14 @@ export async function registerPdfHighlightCSS(plugin: ReactRNPlugin) {
       background-color: #75ccf8 !important;
       padding-bottom: 2.7px;
     }
+    /* High-contrast text selection inside pdfextract highlights */
+    [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"] ::selection,
+    [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"] ::selection,
+    [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"]::selection,
+    [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"]::selection {
+      background-color: #0b2e6b !important;
+      color: #ffffff !important;
+    }
     [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"],
     [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"] {
       background-color: #75f8b2 !important;
