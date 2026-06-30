@@ -85,7 +85,7 @@ export async function registerPdfHighlightCSS(plugin: ReactRNPlugin) {
   const css = `
     [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"],
     [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"] {
-      background-color: #75ccf8 !important;
+      background-color: #b6ddf1 !important;
       padding-bottom: 2.7px;
     }
     /* High-contrast text selection inside pdfextract highlights */
@@ -100,6 +100,39 @@ export async function registerPdfHighlightCSS(plugin: ReactRNPlugin) {
     [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"] {
       background-color: #75f8b2 !important;
       padding-bottom: 2.7px;
+    }
+    /* High-contrast text selection inside incremental highlights */
+    [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"] ::selection,
+    [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"] ::selection,
+    [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"]::selection,
+    [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"]::selection {
+      background-color: #0b4a2e !important;
+      color: #ffffff !important;
+    }
+
+    /* Dark mode: darken highlight backgrounds so light text stays readable */
+    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"],
+    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"] {
+      background-color: #1e496b !important;
+    }
+    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"],
+    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"] {
+      background-color: #1a5c3a !important;
+    }
+    /* Dark mode: lighten the selection so it stands out on the darkened background */
+    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"] ::selection,
+    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"] ::selection,
+    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"]::selection,
+    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"]::selection {
+      background-color: #7cc4f5 !important;
+      color: #06203f !important;
+    }
+    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"] ::selection,
+    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"] ::selection,
+    .dark [data-rem-tags~="pdf-highlight"][data-rem-tags~="incremental"]::selection,
+    .dark [data-rem-tags~="html-highlight"][data-rem-tags~="incremental"]::selection {
+      background-color: #6ee7a8 !important;
+      color: #05381f !important;
     }
 
     [data-rem-tags~="pdfextract"] .hierarchy-editor__tag-bar__tag {
