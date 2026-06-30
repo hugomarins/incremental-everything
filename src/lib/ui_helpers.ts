@@ -85,6 +85,11 @@ export async function registerPdfHighlightCSS(plugin: ReactRNPlugin) {
   const css = `
     [data-rem-tags~="pdf-highlight"][data-rem-tags~="pdfextract"],
     [data-rem-tags~="html-highlight"][data-rem-tags~="pdfextract"] {
+      /* Periwinkle/cornflower blue: stays in the blue family (pdfextract's color)
+         but is more saturated and indigo-leaning than RemNote's cyan-ish sky-blue
+         highlight, so the two read apart by hue alone. Avoids inline borders, which
+         CSS draws on every sliced fragment (superscripts, italics, line wraps) and
+         which overlap the first glyph of each fragment. */
       background-color: #b6ddf1 !important;
       padding-bottom: 2.7px;
     }
