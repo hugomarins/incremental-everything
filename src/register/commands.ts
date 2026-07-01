@@ -234,39 +234,45 @@ export async function registerCommands(plugin: ReactRNPlugin) {
       const combinedRichText = [...frontText, ...backText];
       const plainStart = toCorrectedPlainStart(combinedRichText, r_start);
 
-      // --- Reference-only selection support --------------------------------------
-      // The one case the text matching above can't cover: a selection consisting
-      // solely of a rem-reference node ({ i: 'q' }). References are zero-width in
-      // plain-string space, so selStr is '' → selLen 0 → no text to search for.
+      // --- Rem-reference selection support ---------------------------------------
+      // A selection can contain rem-reference nodes ({ i: 'q' }). References are
+      // zero-width in plain-string space, which defeats the text matching in two ways:
+      //  - a reference-only selection has selStr '' (selLen 0) → nothing to search for;
+      //  - a reference at the edge of a mixed (text + reference) selection lands exactly
+      //    on the sect_r_start/sect_r_end boundary and is skipped by the strict range
+      //    test in processSection (`currIdx > localStart && currIdx < localEnd`).
       //
-      // RemNote clozes a reference by setting the CLOZE (cId) property directly on
-      // the { i: 'q' } node (see RichTextElementRemInterface). We locate it by _id and
-      // reuse the exact same occurrence machinery as text: refCands() returns each
-      // matching node's section-relative plain offset, which we feed into
-      // allFrontOffsets/allBackOffsets below. That lets the existing bestFront/bestBack
-      // → isBack → sect_r_start logic pick the section (front vs back) and disambiguate
-      // duplicates identically to text — inheriting its back-text coordinate handling.
-      // The node identity (refCands' `node`) is captured afterwards for the actual
-      // cloze/highlight application, since a zero-width reference can't be bracketed
-      // by a [sect_r_start, sect_r_end) range.
+      // RemNote clozes a reference by setting the CLOZE (cId) property directly on the
+      // { i: 'q' } node (see RichTextElementRemInterface). We collect the reference _ids
+      // in the selection here; the specific node objects are resolved by identity once
+      // the section and range are known (see selectedRefNodes below), and applied in
+      // processSection / processParentSection.
+      const selectedRefIds = new Set<string>(
+        (selection.richText as any[])
+          .filter((it) => it && typeof it !== 'string' && it.i === 'q')
+          .map((it) => it._id)
+      );
+      // Reference-only selection (no text): there is no string to search for, so reuse
+      // the text occurrence machinery by matching the reference _id instead. Each
+      // candidate's section-relative plain offset feeds allFrontOffsets/allBackOffsets,
+      // letting the existing bestFront/bestBack → isBack → sect_r_start logic pick the
+      // section and disambiguate duplicates identically to text (same back-text handling).
       const selRef = selLen === 0
         ? (selection.richText as any[]).find((it) => it && typeof it !== 'string' && it.i === 'q')
         : undefined;
-      const refCands = (section: RichTextInterface): { off: number; node: any }[] => {
-        const out: { off: number; node: any }[] = [];
+      const refCandOffsets = (section: RichTextInterface): number[] => {
+        const out: number[] = [];
         if (!selRef) return out;
         let plain = 0;
         for (const item of section) {
           const isStr = typeof item === 'string';
           const node = isStr ? { i: 'm' as const, text: item as string } : (item as any);
-          if (!isStr && node.i === 'q' && node._id === selRef._id) out.push({ off: plain, node: item });
+          if (!isStr && node.i === 'q' && node._id === selRef._id) out.push(plain);
           // Plain-string offsets: only text nodes advance the position (references = 0).
           plain += node.i === 'm' ? (node.text?.length || 0) : 0;
         }
         return out;
       };
-      const frontRefCands = refCands(frontText);
-      const backRefCands  = refCands(backText);
 
       // Among all occurrences of the selected text, pick the one whose plain-string
       // start position is closest to the corrected plain-string offset.
@@ -282,8 +288,8 @@ export async function registerCommands(plugin: ReactRNPlugin) {
       // For a reference-only selection, use the reference's section-relative offsets;
       // otherwise fall back to text matching. Either way the section/disambiguation
       // logic below is identical.
-      const allFrontOffsets = selRef ? frontRefCands.map((c) => c.off) : findAllOccurrences(frontStr, selStr);
-      const allBackOffsets  = selRef ? backRefCands.map((c) => c.off)
+      const allFrontOffsets = selRef ? refCandOffsets(frontText) : findAllOccurrences(frontStr, selStr);
+      const allBackOffsets  = selRef ? refCandOffsets(backText)
                                      : (hasBackText ? findAllOccurrences(backStr, selStr) : []);
 
       let isBack = false;
@@ -319,15 +325,27 @@ export async function registerCommands(plugin: ReactRNPlugin) {
 
       const sect_r_end = sect_r_start + selLen;
 
-      // Reference-only selection: isBack / sect_r_start were resolved by the shared
-      // machinery above (via the ref offsets). Now resolve the exact node at that
-      // offset in the chosen section — a zero-width reference can't be matched by the
-      // [sect_r_start, sect_r_end) range, so processSection / processParentSection
-      // apply the cloze / highlight to this node by identity.
-      const selectedRefNode = selRef
-        ? ((isBack ? backRefCands : frontRefCands).find((c) => c.off === sect_r_start)
-            ?? (isBack ? backRefCands : frontRefCands)[0])?.node
-        : undefined;
+      // Now that the section (isBack) and range are resolved, collect the actual
+      // reference node objects the user selected: those in the chosen section whose
+      // _id is in the selection and whose zero-width plain position falls within
+      // [sect_r_start, sect_r_end] (inclusive, so an edge reference isn't skipped by
+      // the strict range test). processSection / processParentSection then apply the
+      // cloze / highlight to these nodes by identity. Guarded by _id so a reference
+      // merely adjacent to the selection isn't caught.
+      const selectedRefNodes = new Set<any>();
+      if (selectedRefIds.size > 0) {
+        const section = isBack ? backText : frontText;
+        let plain = 0;
+        for (const item of section) {
+          const isStr = typeof item === 'string';
+          const node = isStr ? { i: 'm' as const, text: item as string } : (item as any);
+          if (!isStr && node.i === 'q' && selectedRefIds.has(node._id)
+              && plain >= sect_r_start && plain <= sect_r_end) {
+            selectedRefNodes.add(item);
+          }
+          plain += node.i === 'm' ? (node.text?.length || 0) : 0;
+        }
+      }
 
       const clozeId = Math.random().toString(36).substring(2, 10);
 
@@ -419,9 +437,9 @@ export async function registerCommands(plugin: ReactRNPlugin) {
             const hadCloze = RICH_TEXT_FORMATTING.CLOZE in baseNode;
             delete baseNode[RICH_TEXT_FORMATTING.CLOZE];
             stripInheritedHintProps(baseNode);
-            // The selected reference (selectedRefNode) is clozed here — it's
-            // zero-width, so `inSel` (positional) never flags it.
-            if (inSel || item === selectedRefNode) {
+            // Selected references (selectedRefNodes) are clozed here — they're
+            // zero-width, so `inSel` (positional) may not flag them (edge/only case).
+            if (inSel || selectedRefNodes.has(item)) {
               arr.push({ ...baseNode, [RICH_TEXT_FORMATTING.CLOZE]: clozeId });
             } else if (hadCloze) {
               arr.push({ ...baseNode, [RICH_TEXT_FORMATTING.HIGHLIGHT]: 3, [RICH_TEXT_FORMATTING.TEXT_COLOR]: 1 });
@@ -504,9 +522,9 @@ export async function registerCommands(plugin: ReactRNPlugin) {
             const nodeLen = node.i === 'm' ? (node.text?.length || 0) : 0;
 
             if (nodeLen === 0) {
-              // The selected reference node gets the same yellow-highlight + red-font
-              // mark as clozed text, so the parent shows it became a cloze extract.
-              arr.push(item === selectedRefNode
+              // Selected reference nodes get the same yellow-highlight + red-font
+              // mark as clozed text, so the parent shows they became a cloze extract.
+              arr.push(selectedRefNodes.has(item)
                 ? { ...(node as any), [RICH_TEXT_FORMATTING.HIGHLIGHT]: 3, [RICH_TEXT_FORMATTING.TEXT_COLOR]: 1 }
                 : item);
             } else {
