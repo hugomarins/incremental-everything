@@ -234,6 +234,44 @@ export async function registerCommands(plugin: ReactRNPlugin) {
       const combinedRichText = [...frontText, ...backText];
       const plainStart = toCorrectedPlainStart(combinedRichText, r_start);
 
+      // --- Reference-node selection support --------------------------------------
+      // A selection can consist of (or include) rem-reference nodes ({ i: 'q' }).
+      // These are zero-width in plain-string space, so the text-based positional
+      // matching above can't locate them: for a reference-only selection selStr is
+      // '' → selLen 0 → a zero-width range that never flags any node as selected.
+      //
+      // RemNote clozes a reference by setting the CLOZE (cId) property directly on
+      // the { i: 'q' } node (see RichTextElementRemInterface). To locate the exact
+      // reference node object(s) the user selected, walk the editor cursor model
+      // (each non-text node spans 2 positions) and keep those whose editor span
+      // overlaps the selection range AND whose _id matches a reference in the
+      // selection. Object identity then lets processSection / processParentSection
+      // recognise them below (both iterate the same frontText/backText arrays).
+      const r_end = Math.max(selection.range.start, selection.range.end);
+      const selectedRefIds = new Set<string>(
+        (selection.richText as any[])
+          .filter((it) => it && typeof it !== 'string' && it.i === 'q')
+          .map((it) => it._id)
+      );
+      const selectedRefNodes = new Set<any>();
+      if (selectedRefIds.size > 0) {
+        let editorPos = 0;
+        for (const item of combinedRichText) {
+          const isStr = typeof item === 'string';
+          const node = isStr ? { i: 'm' as const, text: item as string } : (item as any);
+          if (node.i === 'm') {
+            editorPos += node.text?.length || 0;
+          } else {
+            // Non-text nodes span 2 positions in the editor cursor model.
+            const overlaps = editorPos < r_end && editorPos + 2 > r_start;
+            if (overlaps && node.i === 'q' && selectedRefIds.has(node._id)) {
+              selectedRefNodes.add(item);
+            }
+            editorPos += 2;
+          }
+        }
+      }
+
       // Among all occurrences of the selected text, pick the one whose plain-string
       // start position is closest to the corrected plain-string offset.
       // This correctly handles duplicate phrases — indexOf always returned the first one,
@@ -280,6 +318,14 @@ export async function registerCommands(plugin: ReactRNPlugin) {
       }
 
       const sect_r_end = sect_r_start + selLen;
+
+      // Reference-only selection: there is no text to position-match, so the
+      // section logic above fell through to the fallback (isBack = false). Derive
+      // isBack from where the selected reference node actually lives so the parent
+      // styling (processParentSection) targets the correct section.
+      if (selLen === 0 && selectedRefNodes.size > 0) {
+        isBack = backText.some((n: any) => selectedRefNodes.has(n));
+      }
 
       const clozeId = Math.random().toString(36).substring(2, 10);
 
@@ -371,7 +417,9 @@ export async function registerCommands(plugin: ReactRNPlugin) {
             const hadCloze = RICH_TEXT_FORMATTING.CLOZE in baseNode;
             delete baseNode[RICH_TEXT_FORMATTING.CLOZE];
             stripInheritedHintProps(baseNode);
-            if (inSel) {
+            // Reference nodes captured by identity (selectedRefNodes) are clozed
+            // here — they're zero-width, so `inSel` (positional) never flags them.
+            if (inSel || selectedRefNodes.has(item)) {
               arr.push({ ...baseNode, [RICH_TEXT_FORMATTING.CLOZE]: clozeId });
             } else if (hadCloze) {
               arr.push({ ...baseNode, [RICH_TEXT_FORMATTING.HIGHLIGHT]: 3, [RICH_TEXT_FORMATTING.TEXT_COLOR]: 1 });
@@ -454,7 +502,11 @@ export async function registerCommands(plugin: ReactRNPlugin) {
             const nodeLen = node.i === 'm' ? (node.text?.length || 0) : 0;
 
             if (nodeLen === 0) {
-              arr.push(item);
+              // A selected reference node gets the same yellow-highlight + red-font
+              // mark as clozed text, so the parent shows it became a cloze extract.
+              arr.push(selectedRefNodes.has(item)
+                ? { ...(node as any), [RICH_TEXT_FORMATTING.HIGHLIGHT]: 3, [RICH_TEXT_FORMATTING.TEXT_COLOR]: 1 }
+                : item);
             } else {
               const nodeStart = currIdx;
               const nodeEnd   = currIdx + nodeLen;
