@@ -55,10 +55,23 @@ export interface ImageScanTiming {
   collectMs: number;
   /** The one taggedRem() membership read. */
   membershipMs: number;
-  /** Cumulative time inside addPowerup/removePowerup. */
+  /**
+   * Summed time inside addPowerup/removePowerup across all writes. With writes
+   * running concurrently this EXCEEDS wall clock, which is the point: divided by
+   * writeCount it gives per-write LATENCY, independent of how many are in flight.
+   */
   writeMs: number;
   /** How many writes that covers, so a per-write cost can be derived. */
   writeCount: number;
+  /**
+   * Wall clock spent on the write phase. Paired with writeMs this separates the
+   * two things concurrency changes in opposite directions: latency per write
+   * (writeMs / writeCount, expected to stay flat or rise slightly) and
+   * throughput (writeCount / writeWallMs, the number that should climb).
+   */
+  writeWallMs: number;
+  /** How many writes were kept in flight, so a logged figure can be reproduced. */
+  concurrency: number;
   /** Cumulative time parked in the event-loop yields, and how many there were. */
   yieldMs: number;
   yieldCount: number;
@@ -84,14 +97,8 @@ export interface ImageTagRemovalResult {
   timing: ImageScanTiming;
 }
 
-/** Progress callback: a human-readable line, counts once the walk starts, and
- *  the running cost breakdown so a run can be diagnosed without finishing. */
-export type ImageScanProgress = (
-  message: string,
-  done?: number,
-  total?: number,
-  timing?: ImageScanTiming
-) => void;
+/** Progress callback: a human-readable line, plus counts once the walk starts. */
+export type ImageScanProgress = (message: string, done?: number, total?: number) => void;
 
 /**
  * How often the walk yields to the event loop.
@@ -109,31 +116,155 @@ export type ImageScanProgress = (
 const YIELD_EVERY = 5000;
 
 /**
- * Progress cadence for a loop that writes on EVERY iteration (the removal pass).
+ * Progress cadence for the write phase, where every step costs a round trip.
  *
- * YIELD_EVERY is tuned for the scan, where iterations are sub-microsecond and
- * 5,000 of them pass in single-digit milliseconds. A removal loop spends ~10ms+
- * per iteration, so the same interval would leave the popup frozen for a minute
- * at a time. Reporting every few hundred writes keeps it alive while the yield
- * toll stays trivial next to the writes themselves.
+ * Separate from YIELD_EVERY because the two loops are nothing alike: the walk
+ * does 5,000 sub-microsecond iterations between reports, while the write phase
+ * spends tens of milliseconds on each one. Reporting every few hundred writes
+ * keeps the popup's numbers moving without making the report itself the load.
  */
 const PROGRESS_EVERY = 250;
+
+/**
+ * How many tag writes are kept in flight.
+ *
+ * Measured, on a 413k-rem knowledge base: a write costs ~74ms of LATENCY, which
+ * sequentially is 13.5 writes/s — against a plugin bridge measured at ~1,800-2,000
+ * calls/s. The pipe therefore sits ~99% idle, waiting. Overlapping writes should
+ * convert almost all of that idle time into throughput.
+ *
+ * MEASURED, AND IT DOES NOT WORK. Do not raise this again without new evidence.
+ *
+ * The reasoning above predicted a near-linear speedup, and it was wrong. Two runs
+ * of 1,173 writes on the same document, at 16 in flight:
+ *
+ *   sequential   74ms per write    13.5 writes/s
+ *   16 in flight  1,116-1,237ms      13-14 writes/s
+ *
+ * Latency rose by almost exactly 16x (74 x 16 = 1,184) while throughput did not
+ * move at all. That is the signature of complete serialization: RemNote applies
+ * tag writes one at a time, so the extra requests only queue behind each other
+ * and every one of them waits out the whole queue. There is no idle capacity on
+ * this path to reclaim — the bridge is idle, but the writer behind it is not.
+ *
+ * So the conclusion in lib/updated_at_probe.ts holds after all, for a different
+ * reason than it was originally reached: overlapping plugin calls does not help,
+ * whether the loop looks throughput-bound or latency-bound.
+ *
+ * Left at 1, which is plain sequential execution. The pool is kept because the
+ * walk/write split it enabled is worth having on its own — progress can count
+ * writes, which are the only slow part — and because a future SDK with a real
+ * bulk tag API would slot in here. There is no such API today: the only
+ * `addTags` in the SDK typings is a UI-location enum member.
+ */
+const WRITE_CONCURRENCY = 1;
+
+const emptyTiming = (): ImageScanTiming => ({
+  collectMs: 0,
+  membershipMs: 0,
+  writeMs: 0,
+  writeCount: 0,
+  writeWallMs: 0,
+  concurrency: 0,
+  yieldMs: 0,
+  yieldCount: 0,
+  leaseMs: 0,
+  walkMs: 0,
+  totalMs: 0,
+});
 
 /** A cheap monotonic clock, falling back to Date.now() where absent. */
 const now = (): number =>
   typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
 
-/** Formats the breakdown for the progress line — the diagnostic output. */
-export const formatScanTiming = (t: ImageScanTiming): string => {
+/**
+ * Formats the breakdown for the console log at the end of a run.
+ *
+ * Console rather than the popup: this is developer diagnostics — it is what
+ * attributed a 90-minute whole-KB run to its writes rather than its walk — and
+ * "walk 0.0s · writes 1173 91.5s" means nothing to someone who just wants their
+ * images tagged. The popup reports elapsed time and counts.
+ */
+const formatScanTiming = (t: ImageScanTiming): string => {
   const s = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
-  const per = t.writeCount > 0 ? ` (${Math.round(t.writeMs / t.writeCount)}ms ea)` : '';
+  let writes = `writes ${t.writeCount}`;
+  if (t.writeCount > 0) {
+    // Latency and throughput both, because concurrency moves them independently:
+    // "74ms ea" can stay put while the per-second figure multiplies.
+    const perWrite = Math.round(t.writeMs / t.writeCount);
+    const perSec = t.writeWallMs > 0 ? Math.round(t.writeCount / (t.writeWallMs / 1000)) : 0;
+    writes += ` ${s(t.writeWallMs)} (${perWrite}ms ea, ${perSec}/s, x${t.concurrency})`;
+  }
   return (
     `walk ${s(t.walkMs)} · ` +
-    `writes ${t.writeCount} ${s(t.writeMs)}${per} · ` +
+    `${writes} · ` +
     `yields ${t.yieldCount} ${s(t.yieldMs)} · ` +
     `collect ${s(t.collectMs)} · tags ${s(t.membershipMs)}`
   );
 };
+
+/**
+ * Runs `write` over every item with a bounded number in flight, accumulating
+ * timing and reporting progress as it goes.
+ *
+ * A fixed pool of workers pulling from a shared cursor, rather than chunked
+ * `Promise.all` batches: a batch only advances when its slowest member settles,
+ * so a single slow write idles the whole batch. Workers keep the pipe full.
+ *
+ * No explicit event-loop yields are needed here — every worker awaits a real
+ * bridge call, which hands control back on its own, so the popup repaints.
+ *
+ * Per-item failures are counted by the caller's `onError` and never abort the
+ * run: on a 20k-write pass, aborting on one bad rem would throw away everything
+ * already done.
+ */
+async function runWriteQueue<T>(
+  items: T[],
+  write: (item: T) => Promise<void>,
+  onError: (item: T, error: unknown) => void,
+  opts: {
+    concurrency: number;
+    timing: ImageScanTiming;
+    lease: SuppressionLease;
+    onTick: (done: number) => void;
+  }
+): Promise<void> {
+  const { concurrency, timing, lease, onTick } = opts;
+  timing.concurrency = concurrency;
+
+  let cursor = 0;
+  let done = 0;
+  const phaseStart = now();
+
+  const worker = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const item = items[cursor++];
+
+      const tWrite = now();
+      try {
+        await write(item);
+      } catch (e) {
+        onError(item, e);
+      }
+      timing.writeMs += now() - tWrite;
+      timing.writeCount++;
+
+      done++;
+      if (done % PROGRESS_EVERY === 0) {
+        timing.writeWallMs = now() - phaseStart;
+        onTick(done);
+        const tLease = now();
+        await lease.renew();
+        timing.leaseMs += now() - tLease;
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker)
+  );
+  timing.writeWallMs = now() - phaseStart;
+}
 
 /**
  * True when a rich text array holds at least one image element.
@@ -200,17 +331,7 @@ export async function scanAndTagImages(
   onProgress?: ImageScanProgress
 ): Promise<ImageScanResult> {
   const t0 = now();
-  const timing: ImageScanTiming = {
-    collectMs: 0,
-    membershipMs: 0,
-    writeMs: 0,
-    writeCount: 0,
-    yieldMs: 0,
-    yieldCount: 0,
-    leaseMs: 0,
-    walkMs: 0,
-    totalMs: 0,
-  };
+  const timing = emptyTiming();
 
   const tCollect = now();
   const rems = await collectScopeRems(plugin, scope, onProgress);
@@ -248,26 +369,21 @@ export async function scanAndTagImages(
   timing.leaseMs += now() - tLeaseStart;
 
   try {
-    const tLoop = now();
+    // PHASE 1 — decide, writing nothing. Measured at 0.24us per rem (413k rems
+    // in 0.1s), so planning the whole knowledge base up front is free. Splitting
+    // it from the writes buys two things the interleaved version could not have:
+    // the exact number of writes is known before the first one is issued, so
+    // progress counts what is actually slow, and the writes become an
+    // order-independent set that can be run concurrently.
+    const tWalk = now();
+    const pending: Array<{ rem: PluginRem; add: boolean }> = [];
     for (let i = 0; i < rems.length; i++) {
-      if (i % YIELD_EVERY === 0) {
-        onProgress?.(`Scanning ${i} / ${rems.length} Rems…`, i, rems.length, {
-          ...timing,
-          // Derived live so an aborted run is still diagnosable: everything in
-          // the loop that is not a write, a yield, or a lease renewal.
-          walkMs: now() - tLoop - timing.writeMs - timing.yieldMs - timing.leaseMs,
-          totalMs: now() - t0,
-        });
-
+      if (i > 0 && i % YIELD_EVERY === 0) {
+        onProgress?.(`Scanning ${i} / ${rems.length} Rems…`, i, rems.length);
         const tYield = now();
         await new Promise((r) => setTimeout(r, 0));
         timing.yieldMs += now() - tYield;
         timing.yieldCount++;
-
-        // Cheap: only writes when the renewal interval has elapsed.
-        const tLease = now();
-        await lease.renew();
-        timing.leaseMs += now() - tLease;
       }
 
       const rem = rems[i];
@@ -277,26 +393,36 @@ export async function scanAndTagImages(
 
       // Already in the right state — no write, which is what keeps a re-run cheap.
       if (hasImage === isTagged) continue;
+      pending.push({ rem, add: hasImage });
+    }
+    // Clamped: derived by subtraction, so accumulated float error can otherwise
+    // print a negative tenth of a second on a run whose walk was ~0.
+    timing.walkMs = Math.max(0, now() - tWalk - timing.yieldMs);
 
-      const tWrite = now();
-      try {
-        if (hasImage) {
+    // PHASE 2 — the expensive part, overlapped.
+    await runWriteQueue(
+      pending,
+      async ({ rem, add }) => {
+        if (add) {
           await rem.addPowerup(hasImagePowerupCode);
           result.tagged++;
         } else {
           await rem.removePowerup(hasImagePowerupCode);
           result.untagged++;
         }
-      } catch (e) {
+      },
+      ({ rem }, e) => {
         result.failed++;
         console.error('[ImageScan] tag write failed for', rem._id, e);
+      },
+      {
+        concurrency: WRITE_CONCURRENCY,
+        timing,
+        lease,
+        onTick: (writesDone) =>
+          onProgress?.(`Tagging ${writesDone} / ${pending.length} Rems…`, writesDone, pending.length),
       }
-      timing.writeMs += now() - tWrite;
-      timing.writeCount++;
-    }
-
-    timing.walkMs =
-      now() - tLoop - timing.writeMs - timing.yieldMs - timing.leaseMs;
+    );
   } finally {
     await lease.release();
   }
@@ -304,7 +430,7 @@ export async function scanAndTagImages(
   timing.totalMs = now() - t0;
   console.log(`[ImageScan] ${formatScanTiming(timing)} · total ${(timing.totalMs / 1000).toFixed(1)}s`);
 
-  onProgress?.(`Scanned ${rems.length} Rems.`, rems.length, rems.length, timing);
+  onProgress?.(`Scanned ${rems.length} Rems.`, rems.length, rems.length);
   return result;
 }
 
@@ -335,17 +461,7 @@ export async function removeImageTags(
   onProgress?: ImageScanProgress
 ): Promise<ImageTagRemovalResult> {
   const t0 = now();
-  const timing: ImageScanTiming = {
-    collectMs: 0,
-    membershipMs: 0,
-    writeMs: 0,
-    writeCount: 0,
-    yieldMs: 0,
-    yieldCount: 0,
-    leaseMs: 0,
-    walkMs: 0,
-    totalMs: 0,
-  };
+  const timing = emptyTiming();
 
   onProgress?.('Finding tagged Rems…');
   const tMembership = now();
@@ -378,45 +494,26 @@ export async function removeImageTags(
   timing.leaseMs += now() - tLeaseStart;
 
   try {
-    const tLoop = now();
-    for (let i = 0; i < tagged.length; i++) {
-      if (i % YIELD_EVERY === 0 || i % PROGRESS_EVERY === 0) {
-        onProgress?.(`Removing ${i} / ${tagged.length} tags…`, i, tagged.length, {
-          ...timing,
-          walkMs: now() - tLoop - timing.writeMs - timing.yieldMs - timing.leaseMs,
-          totalMs: now() - t0,
-        });
-      }
-
-      // Unlike the scan, EVERY iteration here writes, so the loop cannot run
-      // long without yielding and the progress line would otherwise sit still
-      // for the whole run. Yielding on the progress cadence rather than
-      // YIELD_EVERY costs a few ms of timer clamp per few hundred writes —
-      // negligible against a write, and it keeps the popup repainting.
-      if (i > 0 && i % PROGRESS_EVERY === 0) {
-        const tYield = now();
-        await new Promise((r) => setTimeout(r, 0));
-        timing.yieldMs += now() - tYield;
-        timing.yieldCount++;
-
-        const tLease = now();
-        await lease.renew();
-        timing.leaseMs += now() - tLease;
-      }
-
-      const tWrite = now();
-      try {
-        await tagged[i].removePowerup(hasImagePowerupCode);
+    // Nothing to decide here — the tagged list IS the write list — so this is
+    // the write phase and nothing else.
+    await runWriteQueue(
+      tagged,
+      async (rem) => {
+        await rem.removePowerup(hasImagePowerupCode);
         result.removed++;
-      } catch (e) {
+      },
+      (rem, e) => {
         result.failed++;
-        console.error('[ImageScan] tag removal failed for', tagged[i]._id, e);
+        console.error('[ImageScan] tag removal failed for', rem._id, e);
+      },
+      {
+        concurrency: WRITE_CONCURRENCY,
+        timing,
+        lease,
+        onTick: (removed) =>
+          onProgress?.(`Removing ${removed} / ${tagged.length} tags…`, removed, tagged.length),
       }
-      timing.writeMs += now() - tWrite;
-      timing.writeCount++;
-    }
-
-    timing.walkMs = now() - tLoop - timing.writeMs - timing.yieldMs - timing.leaseMs;
+    );
   } finally {
     await lease.release();
   }
@@ -426,6 +523,6 @@ export async function removeImageTags(
     `[ImageScan] removal: ${formatScanTiming(timing)} · total ${(timing.totalMs / 1000).toFixed(1)}s`
   );
 
-  onProgress?.(`Removed ${result.removed} tags.`, tagged.length, tagged.length, timing);
+  onProgress?.(`Removed ${result.removed} tags.`, tagged.length, tagged.length);
   return result;
 }

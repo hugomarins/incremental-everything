@@ -5,9 +5,7 @@ import '../App.css';
 import {
   ImageScanResult,
   ImageScanScope,
-  ImageScanTiming,
   ImageTagRemovalResult,
-  formatScanTiming,
   removeImageTags,
   scanAndTagImages,
 } from '../lib/image_scan';
@@ -33,6 +31,18 @@ const openDocs = () => {
     link.click();
     setTimeout(() => document.body.removeChild(link), 100);
   }
+};
+
+/**
+ * Elapsed time for the report line. Minutes once a run is long enough for
+ * seconds to stop being readable — a first whole-KB pass is measured in tens of
+ * minutes, where "1704.3s" is a number nobody parses.
+ */
+const formatElapsed = (ms: number): string => {
+  const seconds = ms / 1000;
+  if (seconds < 90) return `${seconds.toFixed(1)}s`;
+  const mins = Math.floor(seconds / 60);
+  return `${mins}m ${Math.round(seconds - mins * 60)}s`;
 };
 
 type Phase = 'confirm' | 'running' | 'done' | 'error';
@@ -65,8 +75,6 @@ export function ImageScanPopup() {
   const [mode, setMode] = useState<Mode>('tag');
   const [phase, setPhase] = useState<Phase>('confirm');
   const [progress, setProgress] = useState('');
-  /** Live cost breakdown, so a slow run can be attributed without finishing it. */
-  const [timing, setTiming] = useState<ImageScanTiming | null>(null);
   const [result, setResult] = useState<ImageScanResult | null>(null);
   const [removal, setRemoval] = useState<ImageTagRemovalResult | null>(null);
   const [ranOnKb, setRanOnKb] = useState(false);
@@ -102,11 +110,7 @@ export function ImageScanPopup() {
     setRanOnKb(scope.kind === 'kb');
     setPhase('running');
     setProgress('Starting…');
-    setTiming(null);
-    const onProgress = (message: string, _done?: number, _total?: number, t?: ImageScanTiming) => {
-      setProgress(message);
-      if (t) setTiming(t);
-    };
+    const onProgress = (message: string) => setProgress(message);
     try {
       if (mode === 'remove') {
         setRemoval(await removeImageTags(plugin, scope, onProgress));
@@ -333,22 +337,6 @@ export function ImageScanPopup() {
           <div className="text-xs" style={{ color: 'var(--rn-clr-content-secondary)' }}>
             {progress}
           </div>
-          {/* The running cost breakdown. Present so a slow run can be diagnosed
-              from a couple of minutes of it rather than by sitting through the
-              whole thing — the figures are cumulative, so aborting early still
-              answers where the time is going. */}
-          {timing && (
-            <div
-              className="text-xs font-mono px-2 py-1 rounded"
-              style={{
-                background: 'var(--rn-clr-background-elevation-10)',
-                color: 'var(--rn-clr-content-tertiary)',
-                wordBreak: 'break-word',
-              }}
-            >
-              {formatScanTiming(timing)}
-            </div>
-          )}
           {/* The scan runs inside this popup, so closing it stops the walk. The
               work already written stays valid — the command is idempotent — but
               the run would be incomplete, which matters most on a KB scan. */}
@@ -380,15 +368,8 @@ export function ImageScanPopup() {
             </div>
           )}
 
-          <div
-            className="text-xs font-mono px-2 py-1 rounded"
-            style={{
-              background: 'var(--rn-clr-background-elevation-10)',
-              color: 'var(--rn-clr-content-tertiary)',
-              wordBreak: 'break-word',
-            }}
-          >
-            {(removal.timing.totalMs / 1000).toFixed(1)}s total — {formatScanTiming(removal.timing)}
+          <div className="text-xs" style={{ color: 'var(--rn-clr-content-tertiary)' }}>
+            Took {formatElapsed(removal.timing.totalMs)}.
           </div>
 
           <div className="text-xs" style={{ color: 'var(--rn-clr-content-secondary)' }}>
@@ -429,15 +410,8 @@ export function ImageScanPopup() {
             )}
           </div>
 
-          <div
-            className="text-xs font-mono px-2 py-1 rounded"
-            style={{
-              background: 'var(--rn-clr-background-elevation-10)',
-              color: 'var(--rn-clr-content-tertiary)',
-              wordBreak: 'break-word',
-            }}
-          >
-            {(result.timing.totalMs / 1000).toFixed(1)}s total — {formatScanTiming(result.timing)}
+          <div className="text-xs" style={{ color: 'var(--rn-clr-content-tertiary)' }}>
+            Took {formatElapsed(result.timing.totalMs)}.
           </div>
 
           {howToFilter}

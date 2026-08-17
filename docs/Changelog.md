@@ -2,6 +2,34 @@
 
 This page documents the major changes and improvements for each version of the Incremental RemNote plugin.
 
+## v1.0.49 - August 17th, 2026
+
+### ✨ New - clear the HasImage tag in bulk
+
+**Remove `HasImage` Tags** (`quick: rmimg`) takes the image tag off every Rem that carries it — in the focused Rem's subtree, or across the whole knowledge base. A whole-KB scan can mark tens of thousands of Rems, and RemNote has no way to remove a tag in bulk, so there was no way back.
+
+Nothing is lost: the tag is derived from the images themselves, so **Tag Rems With Images** rebuilds it exactly. Re-running the scan *is* the undo, which is why the command needs none of its own.
+
+📖 [Clearing the tag](Utilities.md#clearing-the-tag)
+
+### ⚡ Improved - Tag Rems With Images is about three times faster
+
+A first whole-KB run on a large knowledge base took **90 minutes**; the same run now takes about **30**. A re-scan, which has almost nothing left to write, takes **10 seconds**.
+
+The documentation now states what a run actually costs, because the shape of it is not obvious: reading every Rem is fast (10 seconds for 413,000 of them) and **writing the tags is the whole cost**. A run's length is set by how many tags it must write, not how many Rems it reads — so the first whole-KB pass is slow once, and every one after it is quick.
+
+📖 [How long it takes](Utilities.md#how-long-it-takes-the-first-whole-kb-run-is-slow)
+
+#### Technical explanation
+
+The scan never suppressed the plugin's own `GlobalRemChanged` listener, so every tag write fired an event straight back into it — a `findOne`, session reads, and a debounced tail per write, all of it pointless for a write the plugin had just made itself. Every other bulk operation here already suppressed it. Doing the same took the measured cost from **232ms to 74ms per write** on a 413k-Rem knowledge base.
+
+Suppression is a **renewable lease** rather than the plain `true` the other callers use, because this scan runs in a popup the user is invited to close, and a torn-down iframe never reaches its `finally` — a stuck `true` would silently disable the listener for the rest of the session. `plugin_operation_active` now accepts either shape: a boolean, or a deadline that expires on its own (`lib/operation_suppression.ts`). Both of the listener's check sites read it through one helper, at the same cost as before — one session read.
+
+The scan is also split into a walk that decides and a pass that writes, which is what lets progress count **writes** — the only slow part — instead of Rems inspected.
+
+Two other things were measured and rejected, recorded here so they are not retried blind. **Yielding to the event loop less often** (every 5,000 Rems rather than 200) was kept, but it is worth ~10 seconds of a 90-minute run, not more. **Overlapping writes** did nothing at all: at 16 in flight, per-write latency rose from 74ms to ~1,180ms — almost exactly 16× — while throughput stayed at 13/s. RemNote applies tag writes strictly one at a time, so concurrent requests only queue behind each other. There is no bulk tag API in the plugin SDK, so ~74ms per tag is the floor.
+
 ## v1.0.48 - August 17th, 2026
 
 ### 📝 Changed - the plugin is now called Incremental RemNote

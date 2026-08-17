@@ -544,7 +544,7 @@ RemNote's search indexes **text**. An image carries no searchable token, so neit
 1. Put your cursor in the Rem you want to scan — or simply open the document — and run **Tag Rems With Images** from the Omnibar (`Cmd+/`).
 2. The **Image Scan popup** opens with two scopes to choose from:
     - **Scan this Rem and its descendants** — the button **names the exact Rem**, so you can be sure of the target before anything is written. The scope is the **focused Rem** when your cursor is in one, and the **open document** otherwise. (With neither, this button is disabled.)
-    - **Scan the whole knowledge base** — every Rem, every document. Slow on a large knowledge base, so reach for it when you want the tag applied everywhere once, and use the scoped run for day-to-day work.
+    - **Scan the whole knowledge base** — every Rem, every document. The **first** such run is slow in proportion to how many images it finds ([how long it takes](#how-long-it-takes-the-first-whole-kb-run-is-slow)), so reach for it when you want the tag applied everywhere once, and use the scoped run for day-to-day work.
 
     The popup is **fully keyboard-driven**: `↑`/`↓` move between the two scopes, `Enter` runs the selected one, `Esc` cancels. (`Esc` is ignored *while a scan is running*, so a reflex press can't abort a long run.)
 
@@ -569,6 +569,34 @@ Any image element in a Rem's **front text or back text** — pasted, dragged, ad
 The command is **idempotent and self-correcting**. On every run it also *removes* the tag from Rems inside the scope that carry it but no longer hold an image — so deleting a figure and re-running leaves no stale mark behind. Rems **outside** the scanned scope are never touched, so a scoped run cannot disturb tags applied in other documents (only a whole-KB run reaches them).
 
 Only Rems whose state actually changes are written to, which is what makes a re-scan of a large document cheap.
+
+#### How long it takes — the first whole-KB run is slow
+
+**Finding the images is fast. Applying the tags is not.** Reading every Rem in a large knowledge base takes seconds; writing a tag costs a round trip to RemNote, and those happen one at a time. So the cost of a run is set almost entirely by **how many tags it has to write**, not by how many Rems it looks at.
+
+Measured on a knowledge base of **413,000 Rems** holding **23,000 images**:
+
+| Run | Writes | Time |
+| --- | --- | --- |
+| Reading every Rem, before any tagging | — | **~10 seconds** |
+| First whole-KB run, tagging everything it finds | 23,000 | **~30 minutes** |
+| Every whole-KB run after that | ~0 | **~10 seconds** |
+| One document (12,000 Rems, 1,200 images) | 1,200 | **~90 seconds** |
+
+So the whole-KB scan is a **one-time cost**, and only on a knowledge base of that size — the write cost per tag also grows with the knowledge base, so a smaller one is disproportionately quicker. After the first pass there is nothing left to write, and a re-scan only has to write the handful of Rems whose images changed since. Day-to-day, run it on a document and it finishes while you watch.
+
+If you would rather not sit through the first pass, run it **per document as you go**; the tag accumulates, and a whole-KB run afterwards finds most of the work already done.
+
+!!! tip "Leave it running"
+    The scan lives inside the popup, so keep it open. If you do close it, nothing breaks — the tags already written stay correct, and running the command again picks up where it left off.
+
+#### Clearing the tag
+
+**Remove `HasImage` Tags** (`quick: rmimg`) takes the tag **off** every Rem that carries it, in the focused Rem's subtree or across the whole knowledge base. It exists because a whole-KB scan can mark tens of thousands of Rems and RemNote offers no way to take a tag off in bulk.
+
+**Nothing is lost.** The tag is derived from the images themselves, so **Tag Rems With Images** rebuilds it exactly — the same relationship *Remove All Priority Band Tags* has to *Refresh Priority Badges*. That is why there is no undo: re-running the scan *is* the undo.
+
+The scopes and keys match the scan's, and it costs the same per tag — clearing 23,000 tags takes about as long as applying them, so prefer the document scope unless you really do want the tag gone everywhere.
 
 #### The tag is invisible in the outline
 

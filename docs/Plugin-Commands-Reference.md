@@ -191,8 +191,18 @@ These commands tag a Rem with one of the [Utilities#queue-display-utilities](Uti
   - **Invisible tag:** the `HasImage` chip is hidden from the editor tag bar (your own tags on the same Rem stay visible).
 
   **Use Case:** reviewing all the figures of a chapter, or finding the images you have not yet turned into occlusion cards — neither of which RemNote's search can do, because an image carries no indexed text.
+  - **Cost:** reading Rems is fast; writing tags is not. The **first** whole-KB run is slow in proportion to the images it finds (~30 min for 23,000 tags on a 413k-Rem knowledge base), and every run after it takes seconds because there is nothing left to write.
 
   📖 See [Utilities → Filter a Document by Images](Utilities.md#filter-a-document-by-images) for the full workflow.
+
+- **Remove `HasImage` Tags** — `quick: rmimg`
+  Takes the **`HasImage`** tag off every Rem that carries it, in the focused Rem's subtree (or open document) or across the **whole knowledge base**. Same popup, same scopes and keys as the scan above.
+  - **Nothing is lost:** the tag is derived from the images themselves, so **Tag Rems With Images** rebuilds it exactly. Re-running the scan *is* the undo — which is why this command has none of its own.
+  - **Cost:** the same per tag as applying them, so clearing a whole knowledge base takes as long as tagging it. Prefer the document scope unless you want the tag gone everywhere.
+
+  **Use Case:** you ran a whole-KB scan, decided you would rather not carry the tag on tens of thousands of Rems, and want it gone — something RemNote itself cannot do in bulk.
+
+  📖 See [Utilities → Clearing the tag](Utilities.md#clearing-the-tag).
 
 - **Bulletize Inline Selected Text** (`Shift+F8`) — `quick: bul`
   Toggles a `• ` prefix at the start of each line **within a single rem**, across a multi-line selection. Built for restoring bullets that a **PDF highlight flattened** into soft-wrapped text (lines joined by `Shift+Enter`) before turning the highlight into an IncRem.
