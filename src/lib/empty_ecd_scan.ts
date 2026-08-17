@@ -1,6 +1,7 @@
 import {
   BuiltInPowerupCodes,
   RemId,
+  RemType,
   RichTextInterface,
   RNPlugin,
   RICH_TEXT_ELEMENT_TYPE,
@@ -43,6 +44,9 @@ export type EmptyEcdScope = { kind: 'rem'; remId: RemId } | { kind: 'kb' };
  * guessed at.
  */
 export type SkipReason =
+  | 'isPortal'
+  | 'isTyped'
+  | 'isStructural'
   | 'hasChildren'
   | 'hasOtherTags'
   | 'isReferenced'
@@ -52,6 +56,9 @@ export type SkipReason =
   | 'unverified';
 
 export const SKIP_REASON_LABELS: Record<SkipReason, string> = {
+  isPortal: 'are portals (no text of their own, but they display other Rems)',
+  isTyped: 'are Concepts or Descriptors, not plain Rems',
+  isStructural: 'are slots or powerup properties',
   hasChildren: 'have children (deleting would take the children too)',
   hasOtherTags: 'carry another tag or powerup besides Extra Card Detail',
   isReferenced: 'are referenced from somewhere else',
@@ -204,12 +211,17 @@ type ScanRem = {
   text?: RichTextInterface;
   backText?: RichTextInterface;
   children?: RemId[];
+  /** The Concept/Descriptor/Portal type. Absent on some builds — see structuralSkipReason. */
+  type?: RemType;
   hasPowerup: (code: string) => Promise<boolean>;
   getTagRems: () => Promise<{ _id: RemId }[]>;
   remsReferencingThis: () => Promise<unknown[]>;
   getCards: () => Promise<unknown[]>;
   getSources: () => Promise<unknown[]>;
   getAliases: () => Promise<unknown[]>;
+  getPortalDirectlyIncludedRem: () => Promise<unknown[]>;
+  isSlot: () => Promise<boolean>;
+  isPowerupProperty: () => Promise<boolean>;
   getParentRem: () => Promise<{ text?: RichTextInterface } | undefined>;
   remove: () => Promise<void>;
 };
@@ -217,9 +229,41 @@ type ScanRem = {
 /**
  * The free half of the test: readable off the snapshot, no round trips.
  * A Rem renders as nothing when neither its text nor its back text has content.
+ *
+ * NOTE THAT BLANK TEXT IS NOT THE SAME AS EMPTY. A Rem can hold no text and
+ * still carry meaning that lives somewhere other than its rich text — see
+ * `structuralSkipReason`, which is what stops this from being a delete
+ * predicate on its own.
  */
 const isBlankRem = (rem: ScanRem): boolean =>
   isBlankRichText(rem.text) && isBlankRichText(rem.backText);
+
+/**
+ * Rems whose content is not in their text at all.
+ *
+ * THIS EXISTS BECAUSE OF A REAL NEAR-MISS: a **portal** has no text of its own —
+ * it is a window onto other Rems — so a blank-text test called one "completely
+ * empty and safe to delete" when deleting it would have destroyed a portal the
+ * user had placed under a flashcard. A portal's contents are NOT its `children`
+ * either (they hang off the portal mechanism), so the children check missed it
+ * too. Nothing in the rich text says "portal"; the signal is `rem.type`.
+ *
+ * Hence the rule: only a Rem of the DEFAULT type is ever a candidate. Concepts
+ * and Descriptors are skipped as well — a typed Rem with no text is someone's
+ * unfinished structure, not import debris, and the cost of being wrong here is
+ * asymmetric.
+ *
+ * `type` is read off the snapshot, so this is free. It is also, empirically, not
+ * always populated: the Rems in the first knowledge base probed reported
+ * `undefined`, which must read as DEFAULT rather than as "unknown, skip it" —
+ * otherwise the command would find nothing at all.
+ */
+const structuralSkipReason = (rem: ScanRem): SkipReason | null => {
+  if (rem.type == null) return null;
+  if (rem.type === RemType.PORTAL) return 'isPortal';
+  if (rem.type !== RemType.DEFAULT_TYPE) return 'isTyped';
+  return null;
+};
 
 /**
  * The paid half: five reads that each rule out a way deleting the Rem would
@@ -230,17 +274,30 @@ const classifyRemotely = async (
   rem: ScanRem,
   ecdPowerupId: RemId | null
 ): Promise<SkipReason | null> => {
-  const [tags, referencing, cards, sources, aliases] = await Promise.all([
-    rem.getTagRems(),
-    rem.remsReferencingThis(),
-    rem.getCards(),
-    rem.getSources(),
-    rem.getAliases(),
-  ]);
+  const [tags, referencing, cards, sources, aliases, portalContents, isSlot, isProperty] =
+    await Promise.all([
+      rem.getTagRems(),
+      rem.remsReferencingThis(),
+      rem.getCards(),
+      rem.getSources(),
+      rem.getAliases(),
+      rem.getPortalDirectlyIncludedRem().catch(() => []),
+      rem.isSlot().catch(() => false),
+      rem.isPowerupProperty().catch(() => false),
+    ]);
 
-  // Extra Card Detail is expected and is the reason the Rem is in this list at
+  // Belt and braces on top of the free `type` test. A portal that displays
+  // anything is never deletable, and this catches one whose type field did not
+  // say so — the near-miss that motivated the check was invisible to every
+  // other signal here.
+  if (portalContents.length > 0) return 'isPortal';
+  if (isSlot || isProperty) return 'isStructural';
+
+  // Extra Card Detail is expected and is the reason the Rem is a candidate at
   // all; anything else — another powerup, a user tag — is a mark somebody put
-  // there on purpose.
+  // there on purpose. Note that built-in powerups do NOT appear here (measured:
+  // ECD Rems return an empty list), so this catches user tags and *plugin*
+  // powerups; built-ins are covered by the type test and the checks above.
   if (tags.some((t) => t._id !== ecdPowerupId)) return 'hasOtherTags';
   if (referencing.length > 0) return 'isReferenced';
   if (cards.length > 0) return 'hasCards';
@@ -268,6 +325,9 @@ async function mapWithConcurrency<T>(
 }
 
 const emptySkips = (): Record<SkipReason, number> => ({
+  isPortal: 0,
+  isTyped: 0,
+  isStructural: 0,
   hasChildren: 0,
   hasOtherTags: 0,
   isReferenced: 0,
@@ -380,6 +440,14 @@ export async function scanEmptyEcdRems(
   const candidates: EmptyEcdCandidate[] = [];
   let checked = 0;
   await mapWithConcurrency(ecdBlanks, READ_CONCURRENCY, async (rem) => {
+    // Free, and first: a portal has no text by nature, so without this a blank
+    // text test hands one straight to the delete list.
+    const structural = structuralSkipReason(rem);
+    if (structural) {
+      skipped[structural]++;
+      return;
+    }
+
     // `remove()` deletes descendants too, so a blank Rem holding children is
     // the single most destructive thing this command could get wrong.
     if ((rem.children?.length ?? 0) > 0) {

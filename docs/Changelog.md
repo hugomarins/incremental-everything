@@ -14,7 +14,7 @@ They come from Anki imports: the *Extra* field is HTML, so an importer that maps
 
 The scan writes nothing. It reports how many Extra Card Detail Rems it checked, how many are safe to delete, how many it kept and why, and a sample of what will go listed by the Rem each blank sits under. Only then is the delete button offered.
 
-The bar for "empty" is high, because this one deletes: no text or back text (an image, reference, LaTeX or annotation counts as content, cosmetic formatting on nothing does not), no children, no tag beyond Extra Card Detail, nothing referencing it, no cards, no source, no alias. Anything that fails a check is kept and counted with its reason.
+The bar for "empty" is high, because this one deletes. **Blank text is not the same as empty** — a **portal** has no text of its own, since it is a window onto other Rems, and its contents are not its children either, so neither a text test nor a child test notices it. Candidates must therefore be plain Rems: not portals, Concepts, Descriptors, slots or properties. On top of that: no text or back text (an image, reference, LaTeX or annotation counts as content, cosmetic formatting on nothing does not), no children, nothing displayed portal-style, no tag beyond Extra Card Detail, nothing referencing it, no cards, no source, no alias. Anything that fails a check is kept and counted with its reason.
 
 📖 [Delete Empty Extra Card Detail Rems](Utilities.md#delete-empty-extra-card-detail-rems)
 

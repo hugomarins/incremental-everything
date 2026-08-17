@@ -370,9 +370,10 @@ export function EmptyEcdPopup() {
               }}
             >
               🗑️ <span className="font-bold text-base">{scan.candidates.length}</span> Rem
-              {scan.candidates.length === 1 ? ' is' : 's are'} completely empty and safe to delete —
-              no text, no image, no children, no references, no cards, no tags beyond Extra Card
-              Detail.
+              {scan.candidates.length === 1 ? ' is' : 's are'} plain Rems holding nothing at all —
+              no text or image, and not a portal, Concept, Descriptor or slot. Nothing underneath
+              them, nothing referencing them, no cards, sources or aliases, and no tag beyond Extra
+              Card Detail.
             </div>
           )}
 

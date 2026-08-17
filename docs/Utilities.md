@@ -797,10 +797,17 @@ Run it from the omnibar. Two scopes, as with the image scan:
 
 #### What counts as empty
 
-The bar is set high on purpose, because this command *deletes*. A Rem is only a candidate when **every one** of these holds:
+The bar is set high on purpose, because this command *deletes*.
 
+!!! warning "Blank text is not the same as empty"
+    Some Rems hold **no text at all and are still doing something** — a **portal** is the clearest case: it has no text of its own because it is a window onto other Rems, and its contents are not its children either, so neither a text test nor a child test notices it. The signal is the Rem's *type*, which is why the checks below start there. This was found the hard way, by a scan that offered a portal as "safe to delete".
+
+A Rem is only a candidate when **every one** of these holds:
+
+* **It is a plain Rem.** Not a **portal**, and not a **Concept**, **Descriptor**, slot or powerup property. A typed Rem with no text is someone's unfinished structure, not import debris.
 * **No text and no back text.** Blank means blank after whitespace, `&nbsp;` and zero-width characters are discounted — but an image, a Rem reference, LaTeX, audio, a drawing or an annotation counts as content even with no letters around it. Purely cosmetic formatting (bold, italic, highlight, colour) on nothing is still nothing; a **cloze**, a **link** or a **comment** is not, even when it renders as empty.
 * **No children.** Deleting a Rem takes its descendants with it, so a blank Rem with anything underneath it is never touched.
+* **It displays nothing.** Asked directly whether it includes any Rem the way a portal does — a second guard behind the type check, since this is the mistake with the worst consequences.
 * **No tag or powerup other than Extra Card Detail.** Anything else is a mark somebody put there deliberately.
 * **Nothing references it**, it has **no flashcards of its own**, **no source**, and **no alias**.
 
