@@ -73,6 +73,7 @@ import { primeQueuePrefetch, flushPendingServed } from '../lib/queue_prefetch';
 import dayjs from 'dayjs';
 import { getIESetting } from '../lib/settings';
 import { recordRemChangeEvent } from '../lib/rem_change_tape';
+import { isOperationSuppressed } from '../lib/operation_suppression';
 
 // Debounce/timeout constants
 const CARD_PROCESSING_DEBOUNCE_MS = 2000;
@@ -814,7 +815,11 @@ export function registerGlobalRemChangedListener(plugin: ReactRNPlugin) {
       // hot path (which is known to fire in the thousands) pays an array push.
       recordRemChangeEvent(plugin, data.remId);
 
-      const isBatchActive = await plugin.storage.getSession<boolean>('plugin_operation_active');
+      // Still exactly one session read; the value may be `true` (a short batch
+      // that clears itself in a finally) or a deadline written by a long or
+      // interruptible job. See lib/operation_suppression.ts for why a job that
+      // can be killed mid-flight must not leave a bare `true` behind.
+      const isBatchActive = await isOperationSuppressed(plugin);
       if (isBatchActive) {
         return;
       }
@@ -977,7 +982,7 @@ export function registerGlobalRemChangedListener(plugin: ReactRNPlugin) {
         remChangeDebounceTimers.delete(data.remId);
         // Re-check suppression flag — the event may have been enqueued
         // before the flag was set, but fires inside a batch operation.
-        const isBatchActiveNow = await plugin.storage.getSession<boolean>('plugin_operation_active');
+        const isBatchActiveNow = await isOperationSuppressed(plugin);
         if (isBatchActiveNow) {
           pendingHistoryMap.delete(data.remId);
           pendingNextRepDateMap.delete(data.remId);

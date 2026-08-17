@@ -38,6 +38,7 @@ import {
   priorityBandVerboseLogsKey,
   enableMasteryDrillId,
   enableFlashcardPrioritisationId,
+  hasImagePowerupName,
 } from '../lib/consts';
 import { computeWeightedShieldBreakdown, formatDuration } from '../lib/utils';
 import {
@@ -1797,6 +1798,37 @@ export async function registerCommands(plugin: ReactRNPlugin) {
       await plugin.widget.openPopup('image_scan_popup', {
         scopeRemId: scope?._id ?? null,
         scopeName,
+      });
+    },
+  });
+
+  // The cleanup half of the command above. Destroys nothing: the tag is derived
+  // from the images themselves, so "Tag Rems With Images" rebuilds it exactly —
+  // the same relationship "Remove All Priority Band Tags" has to "Refresh
+  // Priority Badges (Tables)". It exists because a whole-KB scan can mark 20k+
+  // rems and RemNote's own UI offers no way to take a tag off in bulk.
+  plugin.app.registerCommand({
+    id: 'remove-image-tags',
+    name: `Remove ${hasImagePowerupName} Tags`,
+    description: `Takes the ${hasImagePowerupName} tag off every Rem that carries it, in the focused Rem's subtree or across the whole knowledge base. Rebuild it any time with "Tag Rems With Images".`,
+    quickCode: 'rmimg',
+    action: async () => {
+      // Same scope resolution as the scan, and for the same reason: by the time
+      // the widget mounts the editor has lost focus.
+      let scope = await plugin.focus.getFocusedRem();
+      if (!scope) {
+        const paneId = await plugin.window.getFocusedPaneId();
+        const openRemId = await plugin.window.getOpenPaneRemId(paneId);
+        scope = openRemId ? (await plugin.rem.findOne(openRemId)) || undefined : undefined;
+      }
+
+      const rawName = scope ? await safeRemTextToString(plugin, scope.text) : '';
+      const scopeName = rawName.length > 80 ? rawName.slice(0, 80) + '…' : rawName;
+
+      await plugin.widget.openPopup('image_scan_popup', {
+        scopeRemId: scope?._id ?? null,
+        scopeName,
+        mode: 'remove',
       });
     },
   });
