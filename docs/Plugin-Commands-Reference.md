@@ -305,6 +305,19 @@ These commands tag a Rem with one of the [Utilities#queue-display-utilities](Uti
 - **Jump to Rem by ID**
   Utility to navigate quickly based on raw IDs.
 
+- **Delete Empty Extra Card Detail Rems** — `quick: decd`
+  Finds Rems tagged **Extra Card Detail** that hold **nothing at all** and deletes them after you confirm the count. Two scopes, as above: the focused Rem (or open document), or the whole knowledge base.
+  - **Scan first, delete second:** the scan writes nothing. It reports the full funnel (Rems walked → blank → blank *and* ECD → deletable), how many it kept and **why**, and a sample of what will go listed by the Rem each blank sits under. Only then is the delete button offered — and `Enter` deliberately does not trigger it.
+  - **A high bar for "empty":** no text or back text (an image, Rem reference, LaTeX, audio or annotation counts as content; cosmetic formatting on nothing does not), **no children**, no tag or powerup beyond Extra Card Detail, nothing referencing it, no cards, no source, no alias. Anything failing a check is kept and counted with its reason.
+  - **Recoverable:** deleted Rems go to RemNote's trash, and every id is logged to the developer console before removal.
+  - **Cost:** the scan is quick even whole-KB (reading every Rem takes seconds, and only blank Rems are questioned further); deleting is ~0.1s per Rem because RemNote applies deletions one at a time. The review screen estimates it before you commit.
+
+  **Use Case:** after an **Anki import**. Anki's *Extra* field is HTML, so every paragraph break becomes its own child Rem — and the empty ones appear as **Unnamed** items in the queue. RemNote's search cannot find them, because search indexes text and these have none.
+
+  ![Two empty Extra Card Detail Rems, boxed in red, between real ECD content under a flashcard](assets/empty-ecd-rems.png){ width="800" }
+
+  📖 See [Utilities → Delete Empty Extra Card Detail Rems](Utilities.md#delete-empty-extra-card-detail-rems).
+
 ## System & Maintenance Commands
 
 - **Show Incremental RemNote Panel**

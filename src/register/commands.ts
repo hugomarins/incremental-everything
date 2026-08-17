@@ -1833,6 +1833,38 @@ export async function registerCommands(plugin: ReactRNPlugin) {
     },
   });
 
+  // Cleanup for Anki imports. Anki's Extra field is HTML, so an importer that
+  // maps it onto Extra Card Detail turns every paragraph break into its own
+  // child Rem — and the empty ones surface in the queue as "Unnamed". They hold
+  // no text, so RemNote's own search cannot find them; the powerup's membership
+  // list is the only way to enumerate them.
+  plugin.app.registerCommand({
+    id: 'delete-empty-ecd-rems',
+    name: 'Delete Empty Extra Card Detail Rems',
+    description:
+      'Finds Rems tagged Extra Card Detail that hold nothing at all — the blank bullets an Anki import leaves behind, which appear as "Unnamed" in the queue — and deletes them after you confirm the count.',
+    quickCode: 'decd',
+    action: async () => {
+      // Same scope resolution as the image scan, and for the same reason: by the
+      // time the widget mounts the editor has lost focus, so getFocusedRem()
+      // would come back empty.
+      let scope = await plugin.focus.getFocusedRem();
+      if (!scope) {
+        const paneId = await plugin.window.getFocusedPaneId();
+        const openRemId = await plugin.window.getOpenPaneRemId(paneId);
+        scope = openRemId ? (await plugin.rem.findOne(openRemId)) || undefined : undefined;
+      }
+
+      const rawName = scope ? await safeRemTextToString(plugin, scope.text) : '';
+      const scopeName = rawName.length > 80 ? rawName.slice(0, 80) + '…' : rawName;
+
+      await plugin.widget.openPopup('empty_ecd_popup', {
+        scopeRemId: scope?._id ?? null,
+        scopeName,
+      });
+    },
+  });
+
   plugin.app.registerCommand({
     id: 'debug-video',
     name: 'Debug Video Detection',
@@ -3612,6 +3644,75 @@ export async function registerCommands(plugin: ReactRNPlugin) {
     action: async () => {
       await plugin.storage.setSession(pluginHubHiddenKey, false);
       await plugin.app.toast('Plugin panel restored.');
+    },
+  });
+
+  // Diagnostic for "what does this Rem actually carry?".
+  //
+  // Written to settle whether Extra Card Detail was the right marker for the
+  // empty-ECD cleanup, and kept because the question recurs: built-in powerup
+  // membership is NOT enumerable in RemNote (see lib/synced_key_audit.ts and
+  // lib/priority_bands.ts), so `taggedRem()` on a built-in reports a fraction of
+  // its real membership — three Rems on a knowledge base holding thousands.
+  // Asking a Rem directly is the only reliable answer, and this prints it.
+  //
+  // Focus the FLASHCARD (the parent), not the blank row — the blanks are hard to
+  // click, and this walks the children for you.
+  plugin.app.registerCommand({
+    id: 'debug-probe-ecd',
+    name: 'Debug: Probe Extra Card Detail',
+    description:
+      'Dumps what the focused Rem and each of its children actually carry — every built-in powerup that reports true, plus tags, type and text. Results go to the developer console.',
+    quickCode: 'dpecd',
+    action: async () => {
+      const focused = await plugin.focus.getFocusedRem();
+      if (!focused) {
+        await plugin.app.toast('Focus a Rem first (the flashcard, not the blank row).');
+        return;
+      }
+
+      // Ask every built-in code rather than only ExtraCardDetail: if these Rems
+      // are marked by something else entirely, that is what needs to be seen.
+      const codes = Object.entries(BuiltInPowerupCodes) as [string, string][];
+
+      const probe = async (rem: PluginRem, label: string) => {
+        const powerups: string[] = [];
+        for (const [name, code] of codes) {
+          try {
+            if (await rem.hasPowerup(code)) powerups.push(`${name}(${code})`);
+          } catch {
+            /* a code this build does not know — not interesting */
+          }
+        }
+        let tags: string[] = [];
+        try {
+          tags = (await rem.getTagRems()).map((t) => t._id);
+        } catch (e) {
+          tags = [`<getTagRems threw: ${e}>`];
+        }
+        console.log(`[ProbeECD] ${label}`, {
+          id: rem._id,
+          text: rem.text,
+          textIsEmpty: !rem.text || rem.text.length === 0,
+          backText: rem.backText,
+          childCount: rem.children?.length ?? 0,
+          type: rem.type,
+          powerupsReportingTrue: powerups,
+          tagRemIds: tags,
+        });
+      };
+
+      console.log('[ProbeECD] ==================== START ====================');
+      await probe(focused, 'FOCUSED');
+      const children = await focused.getChildrenRem();
+      for (let i = 0; i < children.length; i++) {
+        await probe(children[i], `CHILD ${i}`);
+      }
+      console.log('[ProbeECD] ===================== END =====================');
+
+      await plugin.app.toast(
+        `Probed ${children.length + 1} Rems — open the developer console to read the result.`
+      );
     },
   });
 

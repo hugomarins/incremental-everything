@@ -514,6 +514,19 @@ Below the shortcuts it shows **one onboarding tip per session**, with **I Got It
 
 📖 **Full documentation:** [The Incremental RemNote Panel](Getting-Started.md#the-incremental-plugin-panel)
 
+### 6.11. Empty Extra Card Detail Popup
+**Trigger:** `Delete Empty Extra Card Detail Rems` command (quick code `decd`)
+
+Scan, review and delete in one popup — but deliberately in **two stages**, because unlike the image scan this one removes Rems and cannot be undone by re-running.
+
+- **Stage one — scope.** The same two buttons as the Image Scan popup: the **focused Rem** (or open document), named on the button, or the **whole knowledge base**. `↑`/`↓` move, `Enter` scans, `Esc` cancels. **Nothing is written** by this stage.
+- **Stage two — review.** How many Extra Card Detail Rems were checked, how many are completely empty and safe to delete, how many were **kept and why** (children, other tags, references, cards, sources, aliases), a **sample of what will go** listed by the Rem each blank sits under, and an estimate of how long deleting will take.
+- **`Enter` is inert here.** It ran the scan on the previous screen; the red **Delete N Rems** button has to be clicked. **Back** returns to the scope choice, **Cancel** closes without touching anything.
+- **Live progress** during the delete, and `Esc` is ignored while it runs so a reflex press can't abort it.
+- **The report stays on screen**: how many were deleted, how many failed, and how long it took. **Scan again** starts over; **?** in the header opens this feature's documentation.
+
+📖 **Full documentation:** [Delete Empty Extra Card Detail Rems](Utilities.md#delete-empty-extra-card-detail-rems)
+
 ---
 
 ## 7. Mastery Drill

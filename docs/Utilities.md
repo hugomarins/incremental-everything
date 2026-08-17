@@ -1,6 +1,6 @@
 # Utilities
 
-Commands and powerups that support the incremental workflow without being part of the queue itself — reshaping text and outlines, finding Rems and sources, and controlling what the queue displays.
+Commands and powerups that support the incremental workflow without being part of the queue itself — reshaping text and outlines, finding Rems and sources, controlling what the queue displays, and clearing out Rems an import left behind.
 
 ---
 
@@ -757,6 +757,77 @@ All commands above can be triggered directly while reviewing a flashcard in the 
 
 - **No Hierarchy, Hide Parent, Hide Grandparent, Remove Parent, Remove Grandparent:** automatically apply the powerup directly to the current card.
 - **Hide in Queue and Remove from Queue:** since these are designed to be applied to *parent/ancestor* Rems rather than the flashcard itself (applying them to the current card would make the card vanish), triggering them in the queue opens a confirmation prompt offering to apply the powerup to the card's parent instead.
+
+---
+
+## Cleaning Up
+
+---
+
+### Delete Empty Extra Card Detail Rems
+
+**`Delete Empty Extra Card Detail Rems`** (`quick: decd`) finds Rems tagged **Extra Card Detail** that hold *nothing at all*, and deletes them once you have confirmed the count.
+
+#### Why they exist
+
+They come from **Anki imports**. Anki's *Extra* / *Back Extra* field is HTML, where a paragraph break is a structural element rather than a character. An importer that maps that field onto RemNote's **Extra Card Detail** powerup therefore creates a child Rem for every `<br>` and `</p>` — and the ones carrying no text arrive as Rems holding literally nothing.
+
+In the outline they are easy to miss — a pair of blank bullets among the green ECD ones, betrayed only by the `✎ ✕` controls sitting on otherwise empty rows:
+
+![Two empty Extra Card Detail Rems, boxed in red, between real ECD content under a flashcard](assets/empty-ecd-rems.png){ width="800" }
+
+In the **queue** they are not missable, because every item shown has to be named and these have no name — so each one surfaces as **Unnamed** while you review.
+
+#### Why the normal search cannot find them
+
+RemNote's search indexes **text**, and these Rems have none. Neither `Ctrl+F` nor a query can isolate a Rem by its emptiness.
+
+Asking the **Extra Card Detail** powerup for its members does not work either — RemNote does not expose membership for its *built-in* powerups, so that list comes back nearly empty on a knowledge base full of them. (The same limitation shows up elsewhere in this plugin, with PDF Highlights and uploaded files.)
+
+So the command works by **walking the scope and asking each Rem directly** whether it carries the powerup. That sounds expensive and is not, because of the order it works in: whether a Rem is blank is readable without asking RemNote anything, so the blank test runs first and reduces a whole knowledge base to the few Rems worth a question.
+
+#### How to use it
+
+Run it from the omnibar. Two scopes, as with the image scan:
+
+* **This Rem and its descendants** — the focused Rem, or the open document when the cursor is not in a Rem.
+* **The whole knowledge base** — every Extra Card Detail Rem there is.
+
+**The scan writes nothing.** It reports what it found and waits; nothing is deleted until you press the red button.
+
+#### What counts as empty
+
+The bar is set high on purpose, because this command *deletes*. A Rem is only a candidate when **every one** of these holds:
+
+* **No text and no back text.** Blank means blank after whitespace, `&nbsp;` and zero-width characters are discounted — but an image, a Rem reference, LaTeX, audio, a drawing or an annotation counts as content even with no letters around it. Purely cosmetic formatting (bold, italic, highlight, colour) on nothing is still nothing; a **cloze**, a **link** or a **comment** is not, even when it renders as empty.
+* **No children.** Deleting a Rem takes its descendants with it, so a blank Rem with anything underneath it is never touched.
+* **No tag or powerup other than Extra Card Detail.** Anything else is a mark somebody put there deliberately.
+* **Nothing references it**, it has **no flashcards of its own**, **no source**, and **no alias**.
+
+Anything that fails a check is **kept and counted**, with the reason shown — so a run that deletes fewer Rems than you expected explains itself rather than leaving you guessing.
+
+#### Confirming before the delete
+
+The review screen gives you the numbers first:
+
+* the **funnel** — how many Rems were walked, how many hold nothing, and how many of *those* carry Extra Card Detail — so a surprising result shows you which stage it narrowed at,
+* how many are completely empty and safe to delete,
+* how many were kept, broken down by reason,
+* a **sample of what will go**, listed by the Rem each blank sits under — so you can recognise the documents involved before agreeing,
+* a rough estimate of how long deleting will take.
+
+`Enter` deliberately does **not** trigger the delete. It ran the scan on the previous screen, and carrying that reflex into an irreversible action is the mistake the two-stage flow exists to prevent — the red button has to be clicked.
+
+#### If you need something back
+
+Deleted Rems go to **RemNote's trash**, so a mistake is recoverable there. Every deleted Rem's id is also written to the developer console before it is removed, which is what makes a specific one findable afterwards.
+
+#### How long it takes
+
+The **scan is quick**, even across a whole knowledge base: reading every Rem takes seconds, the blank test costs nothing on top of that, and only the blank Rems pay for a question to RemNote. **Deleting is the slow part**, at roughly a tenth of a second per Rem, because RemNote applies deletions one at a time. The review screen estimates it before you commit; a few hundred Rems is under a minute, and several thousand is worth starting when you can leave the popup open.
+
+!!! tip "Leave it running"
+    The work lives inside the popup. Closing it mid-delete stops the run — Rems already deleted stay deleted, and running the command again clears the rest.
 
 ---
 

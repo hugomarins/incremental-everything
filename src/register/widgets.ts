@@ -170,6 +170,17 @@ export async function registerWidgets(plugin: ReactRNPlugin) {
     },
   });
 
+  // Scan → review → delete for the blank Rems an Anki import leaves under the
+  // Extra Card Detail powerup. Taller than the image scan popup because the
+  // review stage shows a skip tally and a sample of what will be removed —
+  // deleting is irreversible, so the numbers come before the decision.
+  plugin.app.registerWidget('empty_ecd_popup', WidgetLocation.Popup, {
+    dimensions: {
+      width: 520,
+      height: 'auto',
+    },
+  });
+
   plugin.app.registerWidget('card_info_bar', WidgetLocation.FlashcardUnder, {
     powerupFilter: 'cardPriority',
     dimensions: {
