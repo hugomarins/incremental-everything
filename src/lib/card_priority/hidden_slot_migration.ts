@@ -75,6 +75,16 @@ export interface VisibleSlotScan {
   sampled: number;
   /** Rems found carrying a visible `priority` property child. */
   withVisibleChild: number;
+  /**
+   * Rems whose visible `priority` slot still HOLDS A VALUE.
+   *
+   * Not the same question as the row count, and the difference is what made the
+   * retirement premature on a real knowledge base: deleting the property child
+   * does not clear the value behind it, so a KB with zero rows can have a value on
+   * every single tagged rem. Counting rows alone is what let an "empty" verdict be
+   * issued over 45,178 rems that were not empty at all.
+   */
+  withValue: number;
   /** False when the priority slot definition rem could not be resolved, in which
    *  case withVisibleChild is meaningless and no migration should be offered. */
   resolved: boolean;
@@ -190,7 +200,7 @@ export async function scanVisiblePrioritySlots(
   const slot = await getPowerupSlotByCodeSafe(plugin, CARD_PRIORITY_CODE, PRIORITY_SLOT);
   if (!slot) {
     console.warn(`${LOG} could not resolve the visible priority slot — nothing to scan.`);
-    return { tagged: 0, sampled: 0, withVisibleChild: 0, resolved: false };
+    return { tagged: 0, sampled: 0, withVisibleChild: 0, withValue: 0, resolved: false };
   }
 
   const powerup = await plugin.powerup.getPowerupByCode(CARD_PRIORITY_CODE);
@@ -198,22 +208,29 @@ export async function scanVisiblePrioritySlots(
   const targets = opts.sample ? strideSample(tagged, DETECT_SAMPLE) : tagged;
 
   let withVisibleChild = 0;
+  let withValue = 0;
   let sampled = 0;
   for (let i = 0; i < targets.length; i += BATCH) {
     const batch = targets.slice(i, i + BATCH);
+    // Rows AND values, in one pass: they are independent, and only their union
+    // answers "is there anything left in this slot?".
     const hits = await Promise.all(
-      batch.map((rem) => findVisiblePriorityChildren(rem, slot._id))
+      batch.map(async (rem) => ({
+        rows: await findVisiblePriorityChildren(rem, slot._id),
+        value: await rem.getPowerupProperty(CARD_PRIORITY_CODE, PRIORITY_SLOT).catch(() => null),
+      }))
     );
     sampled += batch.length;
-    withVisibleChild += hits.filter((rows) => rows.length > 0).length;
+    withVisibleChild += hits.filter((h) => h.rows.length > 0).length;
+    withValue += hits.filter((h) => !!h.value).length;
     // The probe only has to answer "any?", so stop as soon as it knows.
-    if (opts.sample && withVisibleChild > 0) break;
+    if (opts.sample && (withVisibleChild > 0 || withValue > 0)) break;
     if (!opts.sample && i % (BATCH * 20) === 0) {
       opts.onProgress?.(`Scanning: ${sampled}/${targets.length}`);
     }
   }
 
-  return { tagged: tagged.length, sampled, withVisibleChild, resolved: true };
+  return { tagged: tagged.length, sampled, withVisibleChild, withValue, resolved: true };
 }
 
 // ── Migration ───────────────────────────────────────────────────────────────
@@ -645,6 +662,17 @@ async function completeIfVisibleSlotIsEmpty(plugin: RNPlugin): Promise<boolean> 
     );
     return false;
   }
+  // Rows gone, values still there. Retiring now would strand every one of them
+  // where nothing can write them — which is what happened on the knowledge base
+  // that produced this check: zero rows, and a value on all 45,178 tagged rems.
+  if (scan.withValue > 0) {
+    console.log(
+      `${LOG} no visible Priority rows left, but ${scan.withValue} of ${scan.tagged} rem(s) still ` +
+        `hold a VALUE in that slot — deleting the row does not clear it. NOT retiring the slot: ` +
+        `run "Clear Leftovers in the Old Priority Slot…" first, which needs the slot registered.`
+    );
+    return false;
+  }
   await markHiddenSlotMigrationComplete(plugin);
   console.log(
     `${LOG} visible slot verified empty across all ${scan.tagged} tagged rem(s) — it will not ` +
@@ -673,6 +701,20 @@ export async function checkCardPriorityHiddenSlotMigration(plugin: RNPlugin): Pr
     }
 
     const record = await readHiddenSlotRecord(plugin);
+
+    // A legacy-slot cleanup has deliberately un-retired the slot and is waiting
+    // for this reload to register it. Anything this function does here fights
+    // that: the "verify and complete" path below re-retires it on the spot, which
+    // is exactly what defeated the first attempt at the three-step flow.
+    if (record?.legacyCleanupUnretiredAt) {
+      console.log(
+        `${LOG} standing down — a legacy-slot cleanup un-retired the visible slot ` +
+          `${new Date(record.legacyCleanupUnretiredAt).toLocaleString()} and is mid-flow. ` +
+          `Run "Clear Leftovers in the Old Priority Slot…" to finish it.`
+      );
+      return;
+    }
+
     if (record?.completedAt) {
       // Logged rather than returning in silence: "no output" is how a check that
       // never ran looks too, and this one is meant to be verifiable.

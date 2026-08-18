@@ -77,8 +77,19 @@ const LOG = '[CardPriority legacy-slot]';
 /** Rems per batch. Matches the migration: reads overlap freely, writes do not. */
 const BATCH = 50;
 
-/** How many rems the probe may walk looking for one leftover before giving up. */
-const PROBE_SCAN_CAP = 2000;
+/**
+ * The probe walks the WHOLE population looking for its candidate, stopping at the
+ * first hit.
+ *
+ * It used to stop after 2,000 rems, which produced a false "this knowledge base
+ * has none": `taggedRem()` order is not related to age, so a run of rems with no
+ * leftover says nothing about the rest. Reads run at roughly 1,800/s, so even a
+ * fruitless full walk of 45,000 rems is under a minute — cheap enough that the
+ * probe should answer the question properly rather than sample it.
+ *
+ * A walk that finds nothing is therefore evidence, not a shrug: it means the slot
+ * is genuinely empty across the knowledge base.
+ */
 
 async function taggedRems(plugin: RNPlugin): Promise<PluginRem[]> {
   const powerup = await plugin.powerup.getPowerupByCode(CARD_PRIORITY_CODE);
@@ -106,6 +117,11 @@ export interface LegacyWriteProbe {
   hidden: string | null;
   /** How many rems were walked to find the candidate. */
   scanned: number;
+  /** Rems seen carrying ANY value in the deprecated slot, candidate or not. */
+  leftoversSeen: number;
+  /** Of those, ones whose hidden slot is empty — the value's only copy, so the
+   *  probe will not experiment on them. */
+  rescueOnlySeen: number;
   cleared: boolean;
   error?: string;
   verdict: string;
@@ -130,15 +146,21 @@ export async function probeLegacyPrioritySlotWrite(
     after: null,
     hidden: null,
     scanned: 0,
+    leftoversSeen: 0,
+    rescueOnlySeen: 0,
     cleared: false,
     verdict: '',
   };
 
   const tagged = await taggedRems(plugin);
-  for (let i = 0; i < tagged.length && probe.scanned < PROBE_SCAN_CAP; i += BATCH) {
+  for (let i = 0; i < tagged.length; i += BATCH) {
     const batch = tagged.slice(i, i + BATCH);
     const values = await Promise.all(batch.map((rem) => readBothSlots(rem)));
     probe.scanned += batch.length;
+    // Counted whether or not a candidate turns up, so a walk that ends without one
+    // can say WHY: no leftovers at all, or leftovers that all need a rescue.
+    probe.leftoversSeen += values.filter(([, visible]) => !!visible).length;
+    probe.rescueOnlySeen += values.filter(([hidden, visible]) => !!visible && !hidden).length;
 
     const hit = values.findIndex(([hidden, visible]) => !!visible && !!hidden);
     if (hit === -1) {
@@ -190,12 +212,13 @@ export async function probeLegacyPrioritySlotWrite(
   }
 
   probe.verdict =
-    probe.scanned >= PROBE_SCAN_CAP
-      ? `No leftover found in the first ${probe.scanned} tagged rem(s). Either this knowledge ` +
-        `base has none, or they sit further along than the probe walks — run the full pass to ` +
-        `find out.`
+    probe.rescueOnlySeen > 0
+      ? `All ${probe.rescueOnlySeen} leftover(s) found across ${probe.scanned} tagged rem(s) are ` +
+        `the ONLY copy of their value — their hidden slot is empty. The probe will not experiment ` +
+        `on those; the full pass moves each value across and verifies it before clearing.`
       : `Nothing to clear: none of the ${probe.scanned} tagged rem(s) holds a value in the old ` +
-        `visible slot.`;
+        `visible slot. Every one of them was read, so this is the whole knowledge base, not a ` +
+        `sample.`;
   return probe;
 }
 
@@ -416,6 +439,8 @@ export async function runLegacyPrioritySlotCleanup(
     after: null,
     hidden: null,
     scanned: 0,
+    leftoversSeen: 0,
+    rescueOnlySeen: 0,
     cleared: false,
     verdict: 'Not reached.',
   };

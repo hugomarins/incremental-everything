@@ -2133,6 +2133,10 @@ export async function registerCommands(plugin: ReactRNPlugin) {
             `Switch the old slot back off?\n\nIt is currently registered because this cleanup ` +
               `switched it on, which is why the empty "Priority" rows are back. Nothing was ` +
               `cleared, so there is no reason to leave it on.\n\n` +
+              (result.probe.scanned > 0
+                ? `The walk covered all ${result.probe.scanned} tagged rem(s) and found ` +
+                  `${result.probe.leftoversSeen} carrying a value in the old slot.\n\n`
+                : '') +
               `OK = switch it off (then RELOAD)    •    Cancel = leave it on and try again`
           );
           if (close) {
