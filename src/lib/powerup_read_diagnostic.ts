@@ -43,13 +43,21 @@ import {
 import {
   CARD_PRIORITY_CODE,
   PRIORITY_SLOT,
+  PRIORITY_VALUE_SLOT,
   SOURCE_SLOT,
   LAST_UPDATED_SLOT,
 } from './card_priority/types';
 import { safeRemTextToString } from './pdfUtils';
 
 const SPECS = [
-  { code: CARD_PRIORITY_CODE, label: 'CardPriority', slots: [PRIORITY_SLOT, SOURCE_SLOT, LAST_UPDATED_SLOT] },
+  {
+    code: CARD_PRIORITY_CODE,
+    label: 'CardPriority',
+    // The hidden PRIORITY_VALUE_SLOT holds the value from v1.0.48 on; the visible
+    // PRIORITY_SLOT is probed too because pre-migration rems still answer from it,
+    // and "which slot answers" is exactly what this diagnostic is for.
+    slots: [PRIORITY_VALUE_SLOT, PRIORITY_SLOT, SOURCE_SLOT, LAST_UPDATED_SLOT],
+  },
   {
     code: powerupCode,
     label: 'Incremental',

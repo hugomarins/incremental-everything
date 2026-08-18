@@ -31,6 +31,7 @@
 import { RNPlugin, PluginRem, BuiltInPowerupCodes } from '@remnote/plugin-sdk';
 import { powerupCode, prioritySlotCode, nextRepDateSlotCode, repHistorySlotCode } from './consts';
 import { CARD_PRIORITY_CODE, PRIORITY_SLOT, SOURCE_SLOT, PrioritySource } from './card_priority/types';
+import { getRawCardPriorityString } from './card_priority/slot_access';
 import { safeRemTextToString } from './pdfUtils';
 import { getPowerupSlotByCodeSafe } from './powerup_slot_compat';
 import { refIdsIn, readRawText } from './raw_slot_dump';
@@ -472,6 +473,24 @@ export async function scanKbForDetachedSlots(
           pointsAt: registeredId,
           pointsAtName: '(duplicated — plugin reads one of them)',
         });
+      }
+    }
+
+    // The CardPriority value moved to a HIDDEN slot in v1.0.48, and a hidden slot
+    // has no property child — so on a migrated knowledge base the loop above finds
+    // no linked child for it, however healthy the value is. Ask the slot directly
+    // before concluding anything: without this every leftover on a migrated KB was
+    // classified "stranded — the only surviving copy" and offered for recovery,
+    // when the real value was sitting safely in the hidden slot.
+    if (code === CARD_PRIORITY_CODE && !linked) {
+      const effective = (await getRawCardPriorityString(rem).catch(() => '')).trim();
+      if (effective !== '') {
+        for (const id of leftoversHere) {
+          const l = leftovers.get(id);
+          if (l) l.ownerPriorityReadable = true;
+        }
+        result.ok++;
+        return 'ok';
       }
     }
 

@@ -62,9 +62,11 @@ import { RNPlugin, RemId } from '@remnote/plugin-sdk';
 import {
   CARD_PRIORITY_CODE,
   PRIORITY_SLOT,
+  PRIORITY_VALUE_SLOT,
   SOURCE_SLOT,
   LAST_UPDATED_SLOT,
 } from './card_priority/types';
+import { getRawCardPriorityString, isHiddenSlotMigrated } from './card_priority/slot_access';
 
 /** How long to wait before re-reading, when the first read shows no movement. */
 const RETRY_DELAY_MS = 500;
@@ -256,8 +258,17 @@ export async function probeUpdatedAtSensitivity(
     return report;
   }
 
+  // WHICH slot to probe. Writing PRIORITY_SLOT on a migrated knowledge base
+  // measures nothing the plugin does — the value moved to the hidden
+  // PRIORITY_VALUE_SLOT — and worse, the write would recreate exactly the visible
+  // property row the migration deleted (on a KB where the slot is still
+  // registered) or vanish into a retired slot (where it is not). So the probe
+  // follows the value.
+  const migrated = await isHiddenSlotMigrated(plugin);
+  const valueSlot = migrated ? PRIORITY_VALUE_SLOT : PRIORITY_SLOT;
+
   const [origPriority, origSource, origLastUpdated] = await Promise.all([
-    rem.getPowerupProperty(CARD_PRIORITY_CODE, PRIORITY_SLOT),
+    rem.getPowerupProperty(CARD_PRIORITY_CODE, valueSlot),
     rem.getPowerupProperty(CARD_PRIORITY_CODE, SOURCE_SLOT),
     rem.getPowerupProperty(CARD_PRIORITY_CODE, LAST_UPDATED_SLOT),
   ]);
@@ -274,7 +285,7 @@ export async function probeUpdatedAtSensitivity(
     const tempLastUpdated = String(Date.now());
 
     report.probes.push(
-      await probeOneSlot(plugin, remId, PRIORITY_SLOT, false, origPriority, tempPriority)
+      await probeOneSlot(plugin, remId, valueSlot, migrated, origPriority, tempPriority)
     );
     report.probes.push(
       await probeOneSlot(plugin, remId, SOURCE_SLOT, true, origSource, tempSource)
@@ -288,8 +299,8 @@ export async function probeUpdatedAtSensitivity(
     // design actually depends on.
     const combined: SlotWriteProbe = {
       label: 'all three at once (as setCardPriority writes them)',
-      slotCode: `${PRIORITY_SLOT}+${SOURCE_SLOT}+${LAST_UPDATED_SLOT}`,
-      hidden: false,
+      slotCode: `${valueSlot}+${SOURCE_SLOT}+${LAST_UPDATED_SLOT}`,
+      hidden: migrated,
       wrote: `${tempPriority} / ${tempSource} / ${tempLastUpdated}`,
       previous: `${origPriority} / ${origSource} / ${origLastUpdated}`,
       remUpdatedAtBefore: 0,
@@ -314,7 +325,7 @@ export async function probeUpdatedAtSensitivity(
           const l = String(Date.now() + 1);
           combined.wrote = `${p} / ${s} / ${l}`;
           await Promise.all([
-            target.setPowerupProperty(CARD_PRIORITY_CODE, PRIORITY_SLOT, [p]),
+            target.setPowerupProperty(CARD_PRIORITY_CODE, valueSlot, [p]),
             target.setPowerupProperty(CARD_PRIORITY_CODE, SOURCE_SLOT, [s]),
             target.setPowerupProperty(CARD_PRIORITY_CODE, LAST_UPDATED_SLOT, [l]),
           ]);
@@ -352,7 +363,7 @@ export async function probeUpdatedAtSensitivity(
         await Promise.all([
           target.setPowerupProperty(
             CARD_PRIORITY_CODE,
-            PRIORITY_SLOT,
+            valueSlot,
             origPriority ? [origPriority] : []
           ),
           target.setPowerupProperty(
@@ -367,7 +378,7 @@ export async function probeUpdatedAtSensitivity(
           ),
         ]);
         const [p, s, l] = await Promise.all([
-          target.getPowerupProperty(CARD_PRIORITY_CODE, PRIORITY_SLOT),
+          target.getPowerupProperty(CARD_PRIORITY_CODE, valueSlot),
           target.getPowerupProperty(CARD_PRIORITY_CODE, SOURCE_SLOT),
           target.getPowerupProperty(CARD_PRIORITY_CODE, LAST_UPDATED_SLOT),
         ]);
@@ -389,7 +400,11 @@ function buildVerdict(report: UpdatedAtProbeReport): string {
   if (!report.ok) return 'Probe did not complete.';
 
   const byCode = new Map(report.probes.map((p) => [p.slotCode, p]));
-  const visible = byCode.get(PRIORITY_SLOT);
+  // The value row, whichever slot carried it — PRIORITY_SLOT before the
+  // hidden-slot migration, PRIORITY_VALUE_SLOT after. `visible` keeps its name
+  // because the verdicts below are about the hand-edit case, which only exists
+  // while the value lives in the visible slot.
+  const visible = byCode.get(PRIORITY_SLOT) ?? byCode.get(PRIORITY_VALUE_SLOT);
   const hiddenSource = byCode.get(SOURCE_SLOT);
   const hiddenUpdated = byCode.get(LAST_UPDATED_SLOT);
   const combined = report.probes[report.probes.length - 1];
@@ -398,6 +413,19 @@ function buildVerdict(report: UpdatedAtProbeReport): string {
   // Three outcomes, and the middle one is the trap: a scheme that works for
   // every write the plugin makes and silently fails only on hand edits would
   // look correct in testing and be wrong in production.
+  // On a migrated KB the value row is a HIDDEN slot write, so it says nothing
+  // about hand edits — there is no property row left to hand-edit.
+  if (visible?.hidden) {
+    return (
+      (visible.moved || combined?.moved || anyHiddenMoved
+        ? 'VIABLE FOR PLUGIN WRITES: rem.updatedAt moves when the priority slots are written, '
+        : 'NOT VIABLE: a real priority write left rem.updatedAt unchanged, ') +
+      'i.e. for every write setCardPriority makes. The hand-edit case this probe used to also ' +
+      'cover no longer exists on this knowledge base: the priority lives in a hidden slot, which ' +
+      'materialises no property row for the user to edit.'
+    );
+  }
+
   if (visible?.moved) {
     return (
       'FULLY VIABLE: a lone write to the visible priority slot moves rem.updatedAt, so hand ' +
@@ -478,7 +506,8 @@ export async function snapshotRemTimes(
   const rem = await plugin.rem.findOne(remId);
   if (!rem) return null;
   const [priority, source, lastUpdated] = await Promise.all([
-    rem.getPowerupProperty(CARD_PRIORITY_CODE, PRIORITY_SLOT),
+    // Effective value: hidden slot first, deprecated visible one second.
+    getRawCardPriorityString(rem),
     rem.getPowerupProperty(CARD_PRIORITY_CODE, SOURCE_SLOT),
     rem.getPowerupProperty(CARD_PRIORITY_CODE, LAST_UPDATED_SLOT),
   ]);

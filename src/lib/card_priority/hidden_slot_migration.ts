@@ -316,21 +316,31 @@ export async function migrateCardPriorityToHiddenSlot(
             // Deleting a property row takes its whole subtree with it, so a row
             // that has children of its own is left alone — a priority row with
             // children is not something this migration should be guessing about.
-            const removeRowsSafely = async (): Promise<void> => {
+            /** Returns how many rows had to be kept, so the caller knows whether
+             *  clearing the slot value would blank a row still on screen. */
+            const removeRowsSafely = async (): Promise<number> => {
+              let kept = 0;
               for (const row of rows) {
                 const grandChildren = await row.getChildrenRem().catch(() => []);
                 if (grandChildren && grandChildren.length > 0) {
                   keptWithChildren++;
+                  kept++;
                   continue;
                 }
                 await row.remove();
                 childrenRemoved++;
               }
+              return kept;
             };
 
-            // Clearing the visible slot is the fallback for a rem whose value is
-            // safe in the hidden slot but whose property child is not there to
-            // delete — RemNote may already have dropped it.
+            // Clearing the visible slot is NOT just the fallback for a rem whose
+            // property child is missing: deleting the child does not clear the
+            // slot value. Observed on a migrated KB — a rem whose row was removed
+            // still answered getPowerupProperty(cardPriority, 'priority') with its
+            // pre-migration number months later, while a rem created after the
+            // migration answered nothing. Left behind, that value is a stale
+            // second copy the fallback read would resurrect the moment the hidden
+            // slot came back empty. So every path clears it, row or no row.
             const clearVisibleSlot = () =>
               rem.setPowerupProperty(CARD_PRIORITY_CODE, PRIORITY_SLOT, []).catch(() => undefined);
 
@@ -353,8 +363,10 @@ export async function migrateCardPriorityToHiddenSlot(
             if (hidden) {
               if (hidden === visible) alreadyHidden++;
               else staleVisible++;
-              if (hasRows) await removeRowsSafely();
-              else await clearVisibleSlot();
+              // A row kept because it has children stays as it is — clearing the
+              // slot would blank a row the user can still see, and the point of
+              // keeping it was not to touch it.
+              if ((hasRows ? await removeRowsSafely() : 0) === 0) await clearVisibleSlot();
               return;
             }
 
@@ -373,8 +385,7 @@ export async function migrateCardPriorityToHiddenSlot(
             }
             moved++;
 
-            if (hasRows) await removeRowsSafely();
-            else await clearVisibleSlot();
+            if ((hasRows ? await removeRowsSafely() : 0) === 0) await clearVisibleSlot();
           } catch (err) {
             errors++;
             if (errorSamples.length < 10) errorSamples.push(`${rem._id}: ${err}`);

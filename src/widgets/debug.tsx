@@ -15,6 +15,7 @@ import { updateIncrementalRemCache } from '../lib/incremental_rem/cache';
 import { IncrementalRep, IncrementalRem } from '../lib/incremental_rem/types';
 import { isPowerupPropertySafe } from '../lib/powerupSlotFilter';
 import { getCardPriority } from '../lib/card_priority';
+import { resolveRawCardPriority, readHiddenSlotRecord, getRawCardPriorityString } from '../lib/card_priority/slot_access';
 import { findNonFlashcardDescendantsWithCardPriority, getSpuriousCardPriorityTags, removeCardPriorityFromSpecificRems, removeCardPriorityFromRem, dumpRemPriorityStructure, findRogueCardPriorityRemsInSubtree, findOrphanedImportedCardPriorities } from '../lib/card_priority/batch';
 import { diagnosePowerupReadPath } from '../lib/powerup_read_diagnostic';
 import { dumpRawPowerupSlots } from '../lib/raw_slot_dump';
@@ -449,11 +450,31 @@ function Debug() {
       // falls through to the ancestor branch — reporting source 'inherited' and
       // lastUpdated 0 exactly as an untagged rem would. Only the raw slot values
       // distinguish "written here" from "resolved on read".
+      //
+      // The VALUE is read from both slots explicitly, not through
+      // readRawCardPriority: that helper skips the visible slot once this realm
+      // knows it is retired, and this panel exists precisely to show what is in
+      // each of them. `priority` is the effective value — hidden first, exactly
+      // the precedence every reader uses; `priorityLegacy` is whatever the
+      // deprecated visible slot still returns.
+      //
+      // A pre-migration rem keeps its old visible number: the migration deleted
+      // the property CHILD but the underlying slot value survived it, so reading
+      // the visible slot here reported a stale number as though it were the
+      // stored priority — and then flagged the (correct) cache as STALE against
+      // it. Rems created after the migration have nothing there at all.
+      const [hiddenPriority, visiblePriority] = await Promise.all([
+        rem.getPowerupProperty('cardPriority', 'priorityValue').catch(() => null),
+        rem.getPowerupProperty('cardPriority', 'priority').catch(() => null),
+      ]);
       const cardPrioritySlots = {
-        priority: await rem.getPowerupProperty('cardPriority', 'priority'),
+        priority: resolveRawCardPriority(hiddenPriority, visiblePriority),
+        priorityHidden: hiddenPriority || null,
+        priorityLegacy: visiblePriority || null,
         source: await rem.getPowerupProperty('cardPriority', 'prioritySource'),
         lastUpdated: await rem.getPowerupProperty('cardPriority', 'lastUpdated'),
       };
+      const hiddenSlotRecord = await readHiddenSlotRecord(rp);
 
       // What the session cache believes about this rem, next to what the DB
       // actually says. Widgets differ in which one they read — priority_editor
@@ -504,6 +525,7 @@ function Debug() {
         cardPriority,
         hasCardPriorityTag,
         cardPrioritySlots,
+        hiddenSlotRecord,
         cacheDrift,
         dismissed,
         isCardDisabledLocally,
@@ -754,7 +776,7 @@ function Debug() {
 
   if (!debugData) return null;
 
-  const { incrementalRem, rawSlotProbe, cardPriority, hasCardPriorityTag, cardPrioritySlots, cacheDrift, dismissed, isCardDisabledLocally, isCardDisabledInAncestors, hasSpuriousTags, guaranteedRogue, suspicious, historySlotError, historyBackupExists, rem } = debugData;
+  const { incrementalRem, rawSlotProbe, cardPriority, hasCardPriorityTag, cardPrioritySlots, hiddenSlotRecord, cacheDrift, dismissed, isCardDisabledLocally, isCardDisabledInAncestors, hasSpuriousTags, guaranteedRogue, suspicious, historySlotError, historyBackupExists, rem } = debugData;
 
   const handleCardCompare = async () => {
     if (!remId) return;
@@ -2710,8 +2732,12 @@ function Debug() {
             if (!r) return;
             const has = await r.hasPowerup('cardPriority');
             const inTagged = taggedIds.has(rid);
+            // The EFFECTIVE value: hidden slot first, deprecated visible one
+            // second. Reading only the visible slot made "slot without tag"
+            // uncountable after the hidden-slot migration — every value the
+            // plugin writes now lands in the hidden slot.
             let slotVal: any = null;
-            try { slotVal = await r.getPowerupProperty('cardPriority', 'priority'); } catch { /* ignore */ }
+            try { slotVal = await getRawCardPriorityString(r); } catch { /* ignore */ }
             const hasSlotValue = slotVal != null && String(slotVal).trim() !== '';
 
             if (has) hasPowerupCount++;
@@ -4008,10 +4034,35 @@ function Debug() {
                      )}
                    </span>
                    <span style={{ fontFamily: 'monospace', color: 'var(--rn-clr-content-tertiary)' }}>
-                     hasPowerup={String(hasCardPriorityTag)} · slots: priority=
-                     {JSON.stringify(cardPrioritySlots.priority ?? null)} source=
+                     hasPowerup={String(hasCardPriorityTag)} · slots: priorityValue=
+                     {JSON.stringify(cardPrioritySlots.priorityHidden ?? null)} source=
                      {JSON.stringify(cardPrioritySlots.source ?? null)} lastUpdated=
                      {JSON.stringify(cardPrioritySlots.lastUpdated ?? null)}
+                   </span>
+                   {/* The deprecated visible slot, shown only when it still
+                       answers. Its value is NOT what the plugin uses once the
+                       hidden slot holds one: the migration deleted the property
+                       children but left the slot values behind, so a rem that
+                       predates it keeps the number it had back then. Silence here
+                       is the healthy state. */}
+                   {cardPrioritySlots.priorityLegacy != null && (
+                     <span style={{ fontFamily: 'monospace', color: 'var(--rn-clr-content-tertiary)' }}>
+                       legacy visible slot: priority=
+                       {JSON.stringify(cardPrioritySlots.priorityLegacy)}
+                       {cardPrioritySlots.priorityHidden
+                         ? cardPrioritySlots.priorityHidden === cardPrioritySlots.priorityLegacy
+                           ? ' — agrees with the hidden slot'
+                           : ' — STALE leftover, ignored (the hidden slot wins)'
+                         : ' — this is the value in use: nothing in the hidden slot yet'}
+                     </span>
+                   )}
+                   <span style={{ fontFamily: 'monospace', color: 'var(--rn-clr-content-tertiary)' }}>
+                     hidden-slot migration:{' '}
+                     {hiddenSlotRecord?.completedAt
+                       ? 'done, visible slot retired'
+                       : hiddenSlotRecord?.migratedAt
+                       ? 'run, visible slot still registered'
+                       : 'not run on this KB'}
                    </span>
                    {/* Cache vs DB. Which one a widget shows depends on the widget
                        — priority_editor reads the value live, card_info_bar reads

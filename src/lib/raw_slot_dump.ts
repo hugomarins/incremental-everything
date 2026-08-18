@@ -45,6 +45,7 @@ import {
 import {
   CARD_PRIORITY_CODE,
   PRIORITY_SLOT,
+  PRIORITY_VALUE_SLOT,
   SOURCE_SLOT,
   LAST_UPDATED_SLOT,
 } from './card_priority/types';
@@ -68,7 +69,13 @@ const SPECS = [
   {
     code: CARD_PRIORITY_CODE,
     label: 'CardPriority',
-    slots: [PRIORITY_SLOT, SOURCE_SLOT, LAST_UPDATED_SLOT],
+    // PRIORITY_VALUE_SLOT first: since v1.0.48 that hidden slot is where the
+    // value lives, and it is the one every reader prefers. PRIORITY_SLOT is kept
+    // in the probe because a pre-migration rem still answers from it — the
+    // migration deleted the property children but not the slot values — and a
+    // dump that showed only that number reported a stale leftover as the stored
+    // priority. Having both side by side is what makes the difference legible.
+    slots: [PRIORITY_VALUE_SLOT, PRIORITY_SLOT, SOURCE_SLOT, LAST_UPDATED_SLOT],
   },
   {
     code: dismissedPowerupCode,

@@ -1838,7 +1838,11 @@ export async function findOrphanedImportedCardPriorities(
     if (orphanPriority !== null || orphanSource !== null) {
       let activePriority: string | null = null;
       let activeSource: string | null = null;
-      try { activePriority = (await node.getPowerupProperty('cardPriority', 'priority')) || null; } catch { /* ignore */ }
+      // Effective value — hidden slot first, then the pre-migration visible one.
+      // Reading the visible slot alone made every imported orphan look
+      // "recoverable" on a migrated knowledge base, since the live value it was
+      // compared against had moved to the hidden slot.
+      try { activePriority = (await getRawCardPriorityString(node)) || null; } catch { /* ignore */ }
       try { activeSource = (await node.getPowerupProperty('cardPriority', 'prioritySource')) || null; } catch { /* ignore */ }
 
       if (orphanPowerupId) {

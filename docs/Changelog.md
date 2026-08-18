@@ -30,6 +30,18 @@ The review screen reports the whole funnel — Rems walked → blank → blank *
 
 `Enter` is inert on the review screen. It ran the scan on the previous one, and inheriting that keystroke into an irreversible delete is the failure the two-stage flow exists to prevent.
 
+### 🐛 Fixed - the debug widget reported an out-of-date priority
+
+The **Card Priority** panel showed the value a Rem had *before* the hidden-slot migration, and then flagged the current one as a stale cache. The number in use — in the Priority popup, the queue and everywhere else — was always the right one.
+
+Deleting a `Priority` row does not clear the value behind it, so a Rem prioritised before the migration still answers the old slot with the number it held back then. The panel read that slot. It now reads the hidden one, shows any leftover separately, and says which state this knowledge base's migration is in. Migration runs from this version on clear the value as well as the row.
+
+📖 [The old value can linger behind the deleted row](Priorities-for-Flashcards.md#stale-visible-value)
+
+#### Technical explanation
+
+Every diagnostic that still probed `cardPriority/priority` now goes through `slot_access` — the raw slot dump and read-path diagnostic report both slots side by side; the KB slot scan asks the hidden slot before calling a leftover the only surviving copy of a value; the imported-priority scan compares against the effective value rather than declaring every orphan recoverable; and the `updatedAt` probe writes the slot actually in use, which on a migrated knowledge base also stops it recreating the very property row the migration deleted.
+
 ## v1.0.49 - August 17th, 2026
 
 ### ✨ New - clear the HasImage tag in bulk
