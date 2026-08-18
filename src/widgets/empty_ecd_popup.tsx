@@ -4,9 +4,12 @@ import '../style.css';
 import '../App.css';
 import {
   deleteEmptyEcdRems,
+  EmptyEcdBackup,
+  EmptyEcdCandidate,
   EmptyEcdDeleteResult,
   EmptyEcdScanResult,
   EmptyEcdScope,
+  saveDeletionBackup,
   scanEmptyEcdRems,
   SKIP_REASON_LABELS,
   SkipReason,
@@ -73,6 +76,7 @@ export function EmptyEcdPopup() {
   const [scan, setScan] = useState<EmptyEcdScanResult | null>(null);
   const [deletion, setDeletion] = useState<EmptyEcdDeleteResult | null>(null);
   const [ranOnKb, setRanOnKb] = useState(false);
+  const [backupNote, setBackupNote] = useState('');
   const [error, setError] = useState('');
 
   /** Which scope button the keyboard is on: 0 = this Rem, 1 = whole KB. */
@@ -113,9 +117,59 @@ export function EmptyEcdPopup() {
     }
   };
 
+  /**
+   * Writes the manifest to a file the user keeps, mirroring the card-priority
+   * migration's backup. Returns false when the browser refused the download, in
+   * which case the run stops — see runDelete.
+   */
+  const downloadBackup = (backup: EmptyEcdBackup, candidates: EmptyEcdCandidate[]): boolean => {
+    try {
+      const payload = {
+        ...backup,
+        // Parent text only in the file, not in local storage: it is what makes
+        // the manifest readable months later, and size is no object here.
+        rows: backup.rows.map((row, i) => ({ ...row, parentText: candidates[i]?.parentText ?? '' })),
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `empty-ecd-deleted-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return true;
+    } catch (err) {
+      console.error('[EmptyECD] backup download failed', err);
+      return false;
+    }
+  };
+
   const runDelete = async () => {
     if (!scan || scan.candidates.length === 0) return;
+
+    // Backup FIRST, and abort if it cannot be written. The plugin already holds
+    // destructive bulk operations to this standard (the card-priority migration
+    // refuses to start without one), and this deletes thousands of Rems.
     setPhase('deleting');
+    setProgress('Writing the backup manifest…');
+    try {
+      const backup = await saveDeletionBackup(plugin, scan.candidates, scopeLabel);
+      const downloaded = downloadBackup(backup, scan.candidates);
+      setBackupNote(
+        downloaded
+          ? `Backed up ${backup.rows.length} Rem ids to a JSON file and to this device.`
+          : `Backed up ${backup.rows.length} Rem ids to this device (the file download was blocked).`
+      );
+    } catch (e) {
+      console.error('[EmptyECD] backup failed:', e);
+      setError(
+        `Nothing was deleted: the backup could not be written (${(e as any)?.message ?? e}). ` +
+          'This run records what it removes before removing it, and will not proceed without that.'
+      );
+      setPhase('error');
+      return;
+    }
+
     setProgress('Starting…');
     try {
       // The ids from the scan, not a fresh derivation: the user confirmed a
@@ -407,6 +461,20 @@ export function EmptyEcdPopup() {
               ` Deleting will take roughly ${estimateDeleteTime(scan.candidates.length)}.`}
           </div>
 
+          {scan.candidates.length > 0 && (
+            <div
+              className="text-xs p-2 rounded"
+              style={{
+                background: 'var(--rn-clr-background-elevation-10)',
+                color: 'var(--rn-clr-content-secondary)',
+              }}
+            >
+              💾 Before deleting anything, a <span className="font-semibold">JSON manifest</span> of
+              every Rem id and the Rem it sits under is saved to this device and offered as a file
+              download. If it cannot be written, nothing is deleted.
+            </div>
+          )}
+
           <div className="flex items-center justify-between gap-2">
             <button
               onClick={() => setPhase('confirm')}
@@ -448,8 +516,8 @@ export function EmptyEcdPopup() {
           )}
 
           <div className="text-xs" style={{ color: 'var(--rn-clr-content-tertiary)' }}>
-            Took {formatElapsed(deletion.elapsedMs)}. Deleted Rems go to RemNote's trash, and every
-            id was written to the developer console before removal.
+            Took {formatElapsed(deletion.elapsedMs)}.{backupNote ? ` ${backupNote}` : ''} Every id
+            was also written to the developer console before removal.
           </div>
 
           <div className="flex justify-end gap-2">

@@ -45,8 +45,10 @@ export type EmptyEcdScope = { kind: 'rem'; remId: RemId } | { kind: 'kb' };
  */
 export type SkipReason =
   | 'isPortal'
+  | 'isTable'
   | 'isTyped'
   | 'isStructural'
+  | 'hasOtherPowerup'
   | 'hasChildren'
   | 'hasOtherTags'
   | 'isReferenced'
@@ -57,8 +59,11 @@ export type SkipReason =
 
 export const SKIP_REASON_LABELS: Record<SkipReason, string> = {
   isPortal: 'are portals (no text of their own, but they display other Rems)',
+  isTable: 'are tables, or a row or cell belonging to one',
   isTyped: 'are Concepts or Descriptors, not plain Rems',
-  isStructural: 'are slots or powerup properties',
+  isStructural: 'are slots, powerup properties or documents',
+  hasOtherPowerup:
+    'carry another RemNote powerup (divider, embed, search portal, code block, uploaded file…)',
   hasChildren: 'have children (deleting would take the children too)',
   hasOtherTags: 'carry another tag or powerup besides Extra Card Detail',
   isReferenced: 'are referenced from somewhere else',
@@ -71,6 +76,8 @@ export const SKIP_REASON_LABELS: Record<SkipReason, string> = {
 /** One delete candidate, with just enough context for the preview list. */
 export interface EmptyEcdCandidate {
   remId: RemId;
+  /** Where the blank sat. Recorded for the backup, so a deletion is traceable. */
+  parentId: RemId | null;
   /** The parent Rem's text, so the user can see WHERE the blank sits. */
   parentText: string;
 }
@@ -222,6 +229,8 @@ type ScanRem = {
   getPortalDirectlyIncludedRem: () => Promise<unknown[]>;
   isSlot: () => Promise<boolean>;
   isPowerupProperty: () => Promise<boolean>;
+  isTable: () => Promise<boolean>;
+  isDocument: () => Promise<boolean>;
   getParentRem: () => Promise<{ text?: RichTextInterface } | undefined>;
   remove: () => Promise<void>;
 };
@@ -270,40 +279,82 @@ const structuralSkipReason = (rem: ScanRem): SkipReason | null => {
  * lose something. Issued together because they are independent and reads
  * overlap freely; the whole set costs roughly one round trip of wall clock.
  */
+/**
+ * Every built-in powerup EXCEPT Extra Card Detail.
+ *
+ * This list exists because of a gap that only became visible once it was
+ * established that `getTagRems()` does not surface built-in powerups: a Rem
+ * carrying `EmbedWebsite`, `SearchPortal`, `Divider`, `TableOfContent`,
+ * `UploadedFile`, `Code` or `Callout` renders real content while holding NO
+ * TEXT, and none of the other checks here would have noticed. The tag check
+ * catches user tags and plugin powerups; nothing caught the built-ins.
+ *
+ * Swept in full rather than from a curated shortlist. Deciding which built-ins
+ * "matter" is exactly the kind of judgement that produced the portal near-miss,
+ * and asking every code costs ~90s once against an irreversible delete.
+ */
+const OTHER_BUILTIN_POWERUP_CODES: string[] = Object.values(BuiltInPowerupCodes).filter(
+  (code) => code !== BuiltInPowerupCodes.ExtraCardDetail
+);
+
 const classifyRemotely = async (
   rem: ScanRem,
   ecdPowerupId: RemId | null
-): Promise<SkipReason | null> => {
-  const [tags, referencing, cards, sources, aliases, portalContents, isSlot, isProperty] =
-    await Promise.all([
-      rem.getTagRems(),
-      rem.remsReferencingThis(),
-      rem.getCards(),
-      rem.getSources(),
-      rem.getAliases(),
-      rem.getPortalDirectlyIncludedRem().catch(() => []),
-      rem.isSlot().catch(() => false),
-      rem.isPowerupProperty().catch(() => false),
-    ]);
+): Promise<{ reason: SkipReason | null; parentId: RemId | null }> => {
+  const [
+    tags,
+    referencing,
+    cards,
+    sources,
+    aliases,
+    portalContents,
+    isSlot,
+    isProperty,
+    isTable,
+    isDocument,
+    otherPowerups,
+    parent,
+  ] = await Promise.all([
+    rem.getTagRems(),
+    rem.remsReferencingThis(),
+    rem.getCards(),
+    rem.getSources(),
+    rem.getAliases(),
+    rem.getPortalDirectlyIncludedRem().catch(() => []),
+    rem.isSlot().catch(() => false),
+    rem.isPowerupProperty().catch(() => false),
+    rem.isTable().catch(() => false),
+    rem.isDocument().catch(() => false),
+    Promise.all(OTHER_BUILTIN_POWERUP_CODES.map((code) => rem.hasPowerup(code).catch(() => false))),
+    rem.getParentRem().catch(() => undefined),
+  ]);
+
+  const parentId = (parent as { _id?: RemId } | undefined)?._id ?? null;
 
   // Belt and braces on top of the free `type` test. A portal that displays
   // anything is never deletable, and this catches one whose type field did not
   // say so — the near-miss that motivated the check was invisible to every
   // other signal here.
-  if (portalContents.length > 0) return 'isPortal';
-  if (isSlot || isProperty) return 'isStructural';
+  if (portalContents.length > 0) return { reason: 'isPortal', parentId };
+  // Tables are portal-backed (their filter is a SearchPortalQuery), so most are
+  // caught above — but asked directly, because a table row or cell that is not
+  // itself typed as a portal would otherwise fall through.
+  if (isTable) return { reason: 'isTable', parentId };
+  if (isSlot || isProperty || isDocument) return { reason: 'isStructural', parentId };
+  if (otherPowerups.some(Boolean)) return { reason: 'hasOtherPowerup', parentId };
 
   // Extra Card Detail is expected and is the reason the Rem is a candidate at
   // all; anything else — another powerup, a user tag — is a mark somebody put
   // there on purpose. Note that built-in powerups do NOT appear here (measured:
   // ECD Rems return an empty list), so this catches user tags and *plugin*
   // powerups; built-ins are covered by the type test and the checks above.
-  if (tags.some((t) => t._id !== ecdPowerupId)) return 'hasOtherTags';
-  if (referencing.length > 0) return 'isReferenced';
-  if (cards.length > 0) return 'hasCards';
-  if (sources.length > 0) return 'hasSources';
-  if (aliases.length > 0) return 'hasAliases';
-  return null;
+  if (tags.some((t: { _id: RemId }) => t._id !== ecdPowerupId))
+    return { reason: 'hasOtherTags', parentId };
+  if (referencing.length > 0) return { reason: 'isReferenced', parentId };
+  if (cards.length > 0) return { reason: 'hasCards', parentId };
+  if (sources.length > 0) return { reason: 'hasSources', parentId };
+  if (aliases.length > 0) return { reason: 'hasAliases', parentId };
+  return { reason: null, parentId };
 };
 
 /** Runs `task` over `items` with a bounded number in flight. */
@@ -326,8 +377,10 @@ async function mapWithConcurrency<T>(
 
 const emptySkips = (): Record<SkipReason, number> => ({
   isPortal: 0,
+  isTable: 0,
   isTyped: 0,
   isStructural: 0,
+  hasOtherPowerup: 0,
   hasChildren: 0,
   hasOtherTags: 0,
   isReferenced: 0,
@@ -456,8 +509,9 @@ export async function scanEmptyEcdRems(
     }
 
     let reason: SkipReason | null;
+    let parentId: RemId | null = null;
     try {
-      reason = await classifyRemotely(rem, ecdPowerupId);
+      ({ reason, parentId } = await classifyRemotely(rem, ecdPowerupId));
     } catch (e) {
       // A read that throws leaves the Rem unverified, and an unverified Rem is
       // never a delete candidate. Reported under its own reason rather than
@@ -467,7 +521,7 @@ export async function scanEmptyEcdRems(
       reason = 'unverified';
     }
     if (reason) skipped[reason]++;
-    else candidates.push({ remId: rem._id, parentText: '' });
+    else candidates.push({ remId: rem._id, parentId, parentText: '' });
 
     checked++;
     if (checked % 100 === 0) {
@@ -512,6 +566,46 @@ export async function scanEmptyEcdRems(
 
   onProgress?.(`Checked ${scopeRems.length} Rems.`, scopeRems.length, scopeRems.length);
   return result;
+}
+
+/** Local-storage key holding the most recent deletion manifest. */
+export const EMPTY_ECD_BACKUP_KEY = 'empty_ecd_last_deletion';
+
+export interface EmptyEcdBackup {
+  takenAt: string;
+  scope: string;
+  rows: Array<{ remId: RemId; parentId: RemId | null }>;
+}
+
+/**
+ * Records what is about to be deleted, before a single Rem is removed.
+ *
+ * The deleted Rems are blank, so nothing about their CONTENT is worth saving —
+ * what is worth saving is that they existed and where. `parentId` is the whole
+ * point: it is what lets someone find the flashcard a blank was removed from if
+ * something later looks wrong.
+ *
+ * This exists because the plugin already holds destructive bulk operations to
+ * this standard — the card-priority migration "refuses to start without a full
+ * backup" (lib/card_priority/hidden_slot_migration.ts) — and deleting thousands
+ * of Rems had no such guard.
+ *
+ * Local storage, not synced: a manifest of several thousand rows would blow the
+ * per-key synced budget, and the file download is the copy that outlives the
+ * knowledge base anyway.
+ */
+export async function saveDeletionBackup(
+  plugin: RNPlugin,
+  candidates: EmptyEcdCandidate[],
+  scope: string
+): Promise<EmptyEcdBackup> {
+  const backup: EmptyEcdBackup = {
+    takenAt: new Date().toISOString(),
+    scope,
+    rows: candidates.map((c) => ({ remId: c.remId, parentId: c.parentId })),
+  };
+  await plugin.storage.setLocal(EMPTY_ECD_BACKUP_KEY, backup);
+  return backup;
 }
 
 /**

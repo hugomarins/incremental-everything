@@ -804,7 +804,8 @@ The bar is set high on purpose, because this command *deletes*.
 
 A Rem is only a candidate when **every one** of these holds:
 
-* **It is a plain Rem.** Not a **portal**, and not a **Concept**, **Descriptor**, slot or powerup property. A typed Rem with no text is someone's unfinished structure, not import debris.
+* **It is a plain Rem.** Not a **portal**, not a **table** (nor a row or cell of one), and not a **Concept**, **Descriptor**, slot, powerup property or document. A typed Rem with no text is someone's unfinished structure, not import debris.
+* **It carries no other RemNote powerup.** Every built-in powerup is asked about individually, because several of them — **divider**, **embedded website**, **search portal**, **code block**, **uploaded file**, **table of contents** — render real content while holding no text at all, and RemNote does not list built-in powerups among a Rem's tags.
 * **No text and no back text.** Blank means blank after whitespace, `&nbsp;` and zero-width characters are discounted — but an image, a Rem reference, LaTeX, audio, a drawing or an annotation counts as content even with no letters around it. Purely cosmetic formatting (bold, italic, highlight, colour) on nothing is still nothing; a **cloze**, a **link** or a **comment** is not, even when it renders as empty.
 * **No children.** Deleting a Rem takes its descendants with it, so a blank Rem with anything underneath it is never touched.
 * **It displays nothing.** Asked directly whether it includes any Rem the way a portal does — a second guard behind the type check, since this is the mistake with the worst consequences.
@@ -827,7 +828,11 @@ The review screen gives you the numbers first:
 
 #### If you need something back
 
-Deleted Rems go to **RemNote's trash**, so a mistake is recoverable there. Every deleted Rem's id is also written to the developer console before it is removed, which is what makes a specific one findable afterwards.
+**A manifest is written before anything is deleted.** Every candidate's id, and the id and text of the Rem it sits under, are saved to this device *and* offered as a **JSON file download**. If neither can be written, the run stops and deletes nothing — the same rule the [card-priority migration](Changelog.md) follows.
+
+That manifest is the recovery path worth relying on. The Rems themselves hold nothing, so what you would ever need back is the knowledge that one existed and *where* — which is exactly what it records. Every id is also written to the developer console before removal.
+
+Whether RemNote's own trash retains plugin-deleted Rems is not something this page will promise; treat the manifest as the backup and, for a large run, take a knowledge-base export first.
 
 #### How long it takes
 
