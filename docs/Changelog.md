@@ -2,33 +2,21 @@
 
 This page documents the major changes and improvements for each version of the Incremental RemNote plugin.
 
-## v1.0.50 - August 17th, 2026
+## v1.0.51 - August 18th, 2026
 
-### ✨ New - clear out the empty Rems an Anki import leaves behind
+### ⚡ Improved - the empty-Rem delete now backs up first, and keeps more Rems
 
-**Delete Empty Extra Card Detail Rems** (`quick: decd`) finds Rems tagged **Extra Card Detail** that hold nothing at all, and deletes them once you confirm the count.
+**A manifest is written before the first deletion** — every Rem id and the id and text of the Rem it sat under, saved to this device *and* offered as a JSON file — and the run refuses to proceed if neither can be written. Deleting thousands of Rems was the one destructive operation in the plugin without that guard; the card-priority migration has always had it.
 
-They come from Anki imports: the *Extra* field is HTML, so an importer that maps it onto Extra Card Detail creates a child Rem for every paragraph break — and the empty ones show up in the queue as **Unnamed**. RemNote's own search cannot find them, because search indexes text and these have none.
+Three kinds of Rem that hold real content could still have been counted as empty, and are now kept: **tables** (a row or cell that is not itself typed as a portal), **documents**, and any Rem carrying **another built-in powerup** — divider, embedded website, search portal, code block, uploaded file, table of contents. All of those render something while holding no text at all.
 
-![Two empty Extra Card Detail Rems, boxed in red, between real ECD content under a flashcard](assets/empty-ecd-rems.png){ width="800" }
-
-The scan writes nothing. It reports how many Extra Card Detail Rems it checked, how many are safe to delete, how many it kept and why, and a sample of what will go listed by the Rem each blank sits under. Only then is the delete button offered.
-
-The bar for "empty" is high, because this one deletes. **Blank text is not the same as empty** — a **portal** has no text of its own, since it is a window onto other Rems, and its contents are not its children either, so neither a text test nor a child test notices it. Candidates must therefore be plain Rems: not portals, tables, Concepts, Descriptors, slots, properties or documents, and carrying **no other RemNote powerup** — divider, embedded website, search portal, code block and uploaded file all render content with no text, and RemNote does not list built-in powerups among a Rem's tags, so every built-in code is asked about individually. On top of that: no text or back text (an image, reference, LaTeX or annotation counts as content, cosmetic formatting on nothing does not), no children, nothing displayed portal-style, no tag beyond Extra Card Detail, nothing referencing it, no cards, no source, no alias. Anything that fails a check is kept and counted with its reason.
-
-**A manifest is written before the first deletion** — every Rem id and the Rem it sat under, to the device and as a JSON file — and the run refuses to proceed if it cannot be written, the same rule the card-priority migration follows.
-
-📖 [Delete Empty Extra Card Detail Rems](Utilities.md#delete-empty-extra-card-detail-rems)
+📖 [If you need something back](Utilities.md#if-you-need-something-back)
 
 #### Technical explanation
 
-**Membership is tested per Rem, not read from a list.** Asking the powerup for its members with `taggedRem()` was the obvious approach and is wrong: on a knowledge base whose Anki imports hold thousands of Extra Card Detail Rems it returned **three**, while `hasPowerup('x')` on those same Rems returned true. This is a known RemNote limitation already recorded twice in this plugin — built-in powerup membership is not enumerable, which is why PDF Highlights are reached by harvesting links instead (`priority_bands.ts`) and why the key audit probes all Rems rather than trusting a tag list (`synced_key_audit.ts`). `getTagRems()` is no substitute either: it comes back empty for Rems that demonstrably carry ECD, while returning ids for a Rem carrying *plugin* powerups.
+The built-in gap follows from a fact recorded when this command was built: `getTagRems()` does not surface built-in powerups, so the "no other tag" check never saw them. Every built-in code except Extra Card Detail is now asked about individually rather than from a curated shortlist — deciding which built-ins "matter" is the judgement that produced the portal near-miss, and asking all of them costs ~90 seconds once, against a delete that cannot be undone.
 
-So the scope is walked and each Rem asked directly — which is affordable only because of the order the phases run in. Text and back text come off the synchronous snapshot, so the blank test filters the whole knowledge base for free and reduces a 400k-Rem walk to the few worth a round trip. Only those are asked `hasPowerup`, and only the blank ECD ones pay for the five verification reads (tags, referencing Rems, cards, sources, aliases). Reads are issued at 16 in flight, because they overlap freely on a bridge measured at ~1,800-2,000 calls/s. The deletes stay strictly sequential, on the finding recorded in v1.0.49: RemNote applies writes one at a time, so overlapping them multiplies latency and leaves throughput flat. Deletion runs under a renewable suppression lease, so the plugin's own `GlobalRemChanged` listener does not process events for writes it just made, and a closed popup expires the lease instead of leaving it stuck.
-
-The review screen reports the whole funnel — Rems walked → blank → blank *and* ECD → deletable — because a scan that finds nothing needs to say which stage it narrowed at. Reporting only the final count is what let the `taggedRem()` bug read as "your knowledge base is clean".
-
-`Enter` is inert on the review screen. It ran the scan on the previous one, and inheriting that keystroke into an irreversible delete is the failure the two-stage flow exists to prevent.
+The manifest goes to **local**, not synced, storage: several thousand rows would blow the per-key synced budget, and the downloaded file is the copy that outlives the knowledge base anyway. What it records is deliberately not the content — the Rems are blank — but that each one existed and which Rem it sat under, which is what makes a deletion traceable afterwards.
 
 ### 🐛 Fixed - the debug widget reported an out-of-date priority
 
@@ -41,6 +29,32 @@ Deleting a `Priority` row does not clear the value behind it, so a Rem prioritis
 #### Technical explanation
 
 Every diagnostic that still probed `cardPriority/priority` now goes through `slot_access` — the raw slot dump and read-path diagnostic report both slots side by side; the KB slot scan asks the hidden slot before calling a leftover the only surviving copy of a value; the imported-priority scan compares against the effective value rather than declaring every orphan recoverable; and the `updatedAt` probe writes the slot actually in use, which on a migrated knowledge base also stops it recreating the very property row the migration deleted.
+
+## v1.0.50 - August 17th, 2026
+
+### ✨ New - clear out the empty Rems an Anki import leaves behind
+
+**Delete Empty Extra Card Detail Rems** (`quick: decd`) finds Rems tagged **Extra Card Detail** that hold nothing at all, and deletes them once you confirm the count.
+
+They come from Anki imports: the *Extra* field is HTML, so an importer that maps it onto Extra Card Detail creates a child Rem for every paragraph break — and the empty ones show up in the queue as **Unnamed**. RemNote's own search cannot find them, because search indexes text and these have none.
+
+![Two empty Extra Card Detail Rems, boxed in red, between real ECD content under a flashcard](assets/empty-ecd-rems.png){ width="800" }
+
+The scan writes nothing. It reports how many Extra Card Detail Rems it checked, how many are safe to delete, how many it kept and why, and a sample of what will go listed by the Rem each blank sits under. Only then is the delete button offered.
+
+The bar for "empty" is high, because this one deletes. **Blank text is not the same as empty** — a **portal** has no text of its own, since it is a window onto other Rems, and its contents are not its children either, so neither a text test nor a child test notices it. Candidates must therefore be plain Rems: not portals, Concepts, Descriptors, slots or properties. On top of that: no text or back text (an image, reference, LaTeX or annotation counts as content, cosmetic formatting on nothing does not), no children, nothing displayed portal-style, no tag beyond Extra Card Detail, nothing referencing it, no cards, no source, no alias. Anything that fails a check is kept and counted with its reason.
+
+📖 [Delete Empty Extra Card Detail Rems](Utilities.md#delete-empty-extra-card-detail-rems)
+
+#### Technical explanation
+
+**Membership is tested per Rem, not read from a list.** Asking the powerup for its members with `taggedRem()` was the obvious approach and is wrong: on a knowledge base whose Anki imports hold thousands of Extra Card Detail Rems it returned **three**, while `hasPowerup('x')` on those same Rems returned true. This is a known RemNote limitation already recorded twice in this plugin — built-in powerup membership is not enumerable, which is why PDF Highlights are reached by harvesting links instead (`priority_bands.ts`) and why the key audit probes all Rems rather than trusting a tag list (`synced_key_audit.ts`). `getTagRems()` is no substitute either: it comes back empty for Rems that demonstrably carry ECD, while returning ids for a Rem carrying *plugin* powerups.
+
+So the scope is walked and each Rem asked directly — which is affordable only because of the order the phases run in. Text and back text come off the synchronous snapshot, so the blank test filters the whole knowledge base for free and reduces a 400k-Rem walk to the few worth a round trip. Only those are asked `hasPowerup`, and only the blank ECD ones pay for the five verification reads (tags, referencing Rems, cards, sources, aliases). Reads are issued at 16 in flight, because they overlap freely on a bridge measured at ~1,800-2,000 calls/s. The deletes stay strictly sequential, on the finding recorded in v1.0.49: RemNote applies writes one at a time, so overlapping them multiplies latency and leaves throughput flat. Deletion runs under a renewable suppression lease, so the plugin's own `GlobalRemChanged` listener does not process events for writes it just made, and a closed popup expires the lease instead of leaving it stuck.
+
+The review screen reports the whole funnel — Rems walked → blank → blank *and* ECD → deletable — because a scan that finds nothing needs to say which stage it narrowed at. Reporting only the final count is what let the `taggedRem()` bug read as "your knowledge base is clean".
+
+`Enter` is inert on the review screen. It ran the scan on the previous one, and inheriting that keystroke into an irreversible delete is the failure the two-stage flow exists to prevent.
 
 ## v1.0.49 - August 17th, 2026
 
