@@ -912,17 +912,36 @@ function Debug() {
     }
 
     // getPowerupSlotByCode — the suspected-deprecated method.
-    const slotCases: Array<[string, string]> = [
-      [powerupCode, nextRepDateSlotCode],       // plugin powerup (Incremental)
-      ['cardPriority', 'priority'],             // plugin powerup (CardPriority)
-      [BuiltInPowerupCodes.PDFHighlight, 'Data'], // built-in powerup
+    const slotCases: Array<[string, string, string]> = [
+      [powerupCode, nextRepDateSlotCode, 'plugin powerup, visible slot'],
+      ['cardPriority', 'priorityValue', 'plugin powerup, HIDDEN slot — throwing is the correct answer'],
+      ['cardPriority', 'priority', 'plugin powerup, the retired visible slot'],
+      [BuiltInPowerupCodes.PDFHighlight, 'Data', 'built-in powerup'],
     ];
-    for (const [pu, slot] of slotCases) {
+    for (const [pu, slot, note] of slotCases) {
       try {
         const slotRem = await plugin.powerup.getPowerupSlotByCode(pu, slot);
-        console.log(`getPowerupSlotByCode('${pu}', '${slot}') → OK, _id=${slotRem?._id ?? '(undefined)'}`);
+        console.log(`getPowerupSlotByCode('${pu}', '${slot}') → OK, _id=${slotRem?._id ?? '(undefined)'} — ${note}`);
       } catch (e) {
-        console.log(`getPowerupSlotByCode('${pu}', '${slot}') → THREW: ${String(e)}`);
+        console.log(`getPowerupSlotByCode('${pu}', '${slot}') → THREW: ${String(e)} — ${note}`);
+      }
+    }
+
+    // What the slot actually HOLDS on the focused rem. getPowerupSlotByCode
+    // cannot answer for a hidden slot by design, so a probe built only from it
+    // says nothing about where the value is — which is the question this panel
+    // gets asked. getPowerupProperty answers it for both slots.
+    const valueRem = await plugin.rem.findOne(remId);
+    if (valueRem) {
+      for (const slot of ['priorityValue', 'priority']) {
+        try {
+          const v = await valueRem.getPowerupProperty('cardPriority', slot);
+          console.log(
+            `getPowerupProperty('cardPriority', '${slot}') on ${remId} → ${v === '' || v == null ? '(empty)' : JSON.stringify(v)}`
+          );
+        } catch (e) {
+          console.log(`getPowerupProperty('cardPriority', '${slot}') on ${remId} → THREW: ${String(e)}`);
+        }
       }
     }
 

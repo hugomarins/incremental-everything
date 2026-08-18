@@ -4,20 +4,6 @@ This page documents the major changes and improvements for each version of the I
 
 ## v1.0.51 - August 18th, 2026
 
-### ⚡ Improved - the empty-Rem delete now backs up first, and keeps more Rems
-
-**A manifest is written before the first deletion** — every Rem id and the id and text of the Rem it sat under, saved to this device *and* offered as a JSON file — and the run refuses to proceed if neither can be written. Deleting thousands of Rems was the one destructive operation in the plugin without that guard; the card-priority migration has always had it.
-
-Three kinds of Rem that hold real content could still have been counted as empty, and are now kept: **tables** (a row or cell that is not itself typed as a portal), **documents**, and any Rem carrying **another built-in powerup** — divider, embedded website, search portal, code block, uploaded file, table of contents. All of those render something while holding no text at all.
-
-📖 [If you need something back](Utilities.md#if-you-need-something-back)
-
-#### Technical explanation
-
-The built-in gap follows from a fact recorded when this command was built: `getTagRems()` does not surface built-in powerups, so the "no other tag" check never saw them. Every built-in code except Extra Card Detail is now asked about individually rather than from a curated shortlist — deciding which built-ins "matter" is the judgement that produced the portal near-miss, and asking all of them costs ~90 seconds once, against a delete that cannot be undone.
-
-The manifest goes to **local**, not synced, storage: several thousand rows would blow the per-key synced budget, and the downloaded file is the copy that outlives the knowledge base anyway. What it records is deliberately not the content — the Rems are blank — but that each one existed and which Rem it sat under, which is what makes a deletion traceable afterwards.
-
 ### 🐛 Fixed - the debug widget reported an out-of-date priority
 
 The **Card Priority** panel showed the value a Rem had *before* the hidden-slot migration, and then flagged the current one as a stale cache. The number in use — in the Priority popup, the queue and everywhere else — was always the right one.
@@ -37,6 +23,10 @@ Every diagnostic that still probed `cardPriority/priority` now goes through `slo
 **Delete Empty Extra Card Detail Rems** (`quick: decd`) finds Rems tagged **Extra Card Detail** that hold nothing at all, and deletes them once you confirm the count.
 
 They come from Anki imports: the *Extra* field is HTML, so an importer that maps it onto Extra Card Detail creates a child Rem for every paragraph break — and the empty ones show up in the queue as **Unnamed**. RemNote's own search cannot find them, because search indexes text and these have none.
+
+Rems that are also kept: **tables** (a row or cell that is not itself typed as a portal), **documents**, and any Rem carrying **another built-in powerup** — divider, embedded website, search portal, code block, uploaded file, table of contents. All of those render something while holding no text at all.
+
+**A manifest is written before the first deletion** — every Rem id and the id and text of the Rem it sat under, saved to this device *and* offered as a JSON file — and the run refuses to proceed if neither can be written. Deleting thousands of Rems was the one destructive operation in the plugin without that guard; the card-priority migration has always had it.
 
 ![Two empty Extra Card Detail Rems, boxed in red, between real ECD content under a flashcard](assets/empty-ecd-rems.png){ width="800" }
 
