@@ -43,11 +43,27 @@
 // wrong assumption costs one rem, not a 45,000-rem pass that appears to work and
 // changes nothing.
 //
-// So the values are only reachable while the slot is REGISTERED. On a knowledge
-// base that has retired it, the cleanup is a three-step flow the command drives:
-// un-retire (migration untouched) → reload → run again, which probes, sweeps and
-// re-retires. The window in between costs an empty Priority row on every tagged
-// rem, so it is the user's call to open it, not this module's.
+// AND RE-REGISTERING DOES NOT GIVE THEM BACK — IT ORPHANS THEM
+//
+// The obvious repair is to register the slot again and clear the values through
+// it. Tried, 18/08/2026, and it does something else entirely: slot values bind to
+// the slot DEFINITION REM, not to the code string. The old definition rem was
+// gone (the powerup's slot children were Priority Source and Last Updated only,
+// with no Priority among them, while reads still returned values), so
+// re-registering minted a NEW one — `getPowerupSlotByCode` returned an id that
+// had never been seen before — and the code now resolves to that empty slot. The
+// rem that read "30" before the reload read empty after it, with nothing written.
+//
+// The leftovers are therefore not clearable on a retired knowledge base; they are
+// ORPHANED by the act of trying, which reaches the same end state by a different
+// route: nothing can read them, and nothing can write them. The three-step flow
+// the command drives (un-retire → reload → run again → re-retire) is still the
+// right sequence, but what it actually does on such a KB is orphan-then-verify,
+// and the second run correctly reports nothing left to clear.
+//
+// Where the pass does real work is a knowledge base migrated but NOT yet retired:
+// there the slot definition rem is the original one, the values are genuinely
+// reachable, and clearing them is a clearing.
 //
 // SAFETY
 //

@@ -2096,8 +2096,13 @@ export async function registerCommands(plugin: ReactRNPlugin) {
             `nothing is written back. But while it is on, RemNote draws the empty "Priority" row ` +
             `again on every prioritised Rem — including inside table cells, where that row is ` +
             `what covers up the cell's own content.\n\n` +
+            `Be aware of what this actually achieves. If RemNote has to create a fresh slot ` +
+            `definition for the switched-on slot, the old values do not come back with it — they ` +
+            `stay behind the definition they were written against, where nothing can read or ` +
+            `write them again. That is the same end state as clearing them, reached by orphaning ` +
+            `rather than by erasing.\n\n` +
             `Three steps: OK switches it on → RELOAD RemNote → run this command again, which ` +
-            `clears the leftovers and switches it back off.\n\n` +
+            `clears whatever is still reachable and switches it back off.\n\n` +
             `OK = switch it on    •    Cancel = leave the leftovers alone (they are ignored by ` +
             `every part of the plugin)`
         );
