@@ -102,24 +102,6 @@ export interface HiddenSlotMigrationRecord {
   moved?: number;
   /** Visible property children deleted by that run. */
   childrenRemoved?: number;
-  /**
-   * When a run of the legacy-slot cleanup finished with nothing failing.
-   *
-   * Deleting the visible property child does NOT clear the slot value behind it,
-   * so a knowledge base migrated before v1.0.51 keeps a frozen second copy of
-   * every priority in the retired slot (lib/card_priority/legacy_slot_cleanup.ts).
-   * This says that copy is gone.
-   */
-  legacyValuesClearedAt?: number;
-  /** How many leftovers that run removed. */
-  legacyValuesCleared?: number;
-  /**
-   * Set while the visible slot has been deliberately un-retired so the legacy
-   * cleanup can write to it, and cleared when it is retired again. It is what
-   * lets the cleanup command know, after the reload, that it is mid-flow and must
-   * put the retirement back when it finishes.
-   */
-  legacyCleanupUnretiredAt?: number;
   /** Set when the user chose "never ask again" on the startup offer. */
   offerSuppressed?: boolean;
   /** Last time the startup offer was shown, for the log. */
@@ -224,34 +206,6 @@ export async function markHiddenSlotMigrationComplete(
     migratedAt: existing?.migratedAt ?? now,
     completedAt: now,
   });
-}
-
-/**
- * Un-retires the visible slot WITHOUT undoing the migration.
- *
- * `completedAt` alone is dropped, so the slot is registered again on the next
- * start while `migratedAt` keeps writes going to the hidden slot only. This is
- * the one way to reach the values the migration left in the visible slot:
- * measured on RemNote's current build, `setPowerupProperty` on an unregistered
- * slot code does not throw — it returns normally, shows the user a toast
- * ("attempted to setPowerupProperty for a slot which doesn't exist") and changes
- * nothing. A retired slot can be read and not written.
- *
- * The window it opens is not free: while the slot is registered RemNote draws its
- * (empty) row again on every tagged rem, which is the table-cell problem the
- * migration existed to fix. Callers must say so and re-retire as soon as the
- * cleanup finishes.
- */
-export async function unretireVisiblePrioritySlot(plugin: RNPlugin): Promise<void> {
-  const kbId = await currentKbId(plugin);
-  if (!kbId) return;
-  const state = await readState(plugin);
-  if (state[kbId]) {
-    delete state[kbId].completedAt;
-    state[kbId].legacyCleanupUnretiredAt = Date.now();
-    await plugin.storage.setSynced(cardPriorityHiddenSlotStateKey, state);
-  }
-  visibleSlotRetired = false;
 }
 
 /**

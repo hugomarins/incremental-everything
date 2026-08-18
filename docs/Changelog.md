@@ -4,17 +4,19 @@ This page documents the major changes and improvements for each version of the I
 
 ## v1.0.51 - August 18th, 2026
 
-### ✨ New - clear the leftovers the priority migration could not see
+### 🐛 Fixed - a cleared priority could be served a pre-migration number
 
-**Clear Leftovers in the Old Priority Slot…** empties the numbers left behind in the deprecated visible `Priority` slot. Deleting that slot's row does **not** clear the value stored behind it, so a Rem prioritised before the migration still holds a frozen copy of its old priority — invisible in the outline, and reachable only through the API.
+On a knowledge base migrated to the hidden slot, a Rem whose priority was **cleared** afterwards could still resolve to the number it carried *before* the migration — the plugin fell back to the old slot when the hidden one was empty, and that slot still holds a frozen copy.
 
-Your real priorities are unaffected: they live in the hidden slot, which is what every part of the plugin reads. The leftover is a second, silently diverging copy, and it matters only if anything ever reads that slot again.
+Deleting the old `Priority` row never cleared the value behind it, and once the slot is retired that value cannot be removed: a retired slot can be read but not written, and registering it again creates a *new* slot definition that masks the old values rather than exposing them. So the fix is on the reading side — the priority read now settles whether the slot is retired **before** consulting it, instead of consulting it and preferring the hidden value afterwards.
 
-The run **tests one Rem first**, and everything is backed up before that. A leftover is only cleared when the hidden slot already holds a value; where the old slot holds the **only** copy, the value is moved across and read back *before* the old one is emptied.
+📖 [The old value can linger behind the deleted row](Priorities-for-Flashcards.md#stale-visible-value)
 
-**If the old slot has already been retired, clearing takes three steps.** A retired slot can be read but not written — `setPowerupProperty` on it returns without error and changes nothing at all — so the command switches the slot back on, asks you to reload, then clears the leftovers and switches it off again. Switching it on is not an undo, but while it is on the empty `Priority` rows come back, table cells included, so the command asks before doing it. Leaving the leftovers alone is also fine: nothing reads that slot while it is retired.
+#### Technical explanation
 
-📖 [Clear Leftovers in the Old Priority Slot…](Plugin-Commands-Reference.md#clear-legacy-card-priority-slot)
+`rawCardPriorityReads` skips the deprecated slot only when the realm knows it is retired, and that flag starts unknown everywhere — so a widget realm, which never writes, consulted the old slot for its entire life. `getCardPriority` now resolves the flag first; it is memoised, so this costs one synced-storage read per realm rather than one per Rem.
+
+The startup check that retires the slot was also counting the wrong thing: it looked for visible property *rows*, which the migration deletes, and so certified a knowledge base "empty" while 45,178 Rems still held a value in that slot. It now counts values as well and refuses to retire while any remain — the state it was creating is the one that cannot be repaired.
 
 ### 🐛 Fixed - the debug widget reported an out-of-date priority
 

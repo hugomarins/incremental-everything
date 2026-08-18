@@ -18,6 +18,7 @@ import {
 } from './types';
 import {
   getRawCardPriorityString,
+  isHiddenSlotMigrated,
   rawCardPriorityReads,
   resolveRawCardPriority,
   writeRawCardPriority,
@@ -91,9 +92,22 @@ export async function getCardPriority(
   rem: PluginRem,
   options?: { preloadedCards?: Card[] }
 ): Promise<CardPriorityInfo | null> {
-  // The priority is read from two slots — the hidden one it lives in now and the
-  // visible one it lived in before the migration — folded into this same
-  // Promise.all so the extra call costs no wall-clock time. See slot_access.ts.
+  // Settle whether the deprecated visible slot is retired BEFORE reading it.
+  //
+  // rawCardPriorityReads skips that slot only when this realm already knows the
+  // answer, and the flag starts unknown in every realm — so a realm that only
+  // ever reads (a widget) used to consult the visible slot for its whole life.
+  // That is not harmless: the migration deletes the visible property row without
+  // clearing the value behind it, and a retired slot can still be read, so a rem
+  // whose hidden value has since been cleared would resolve to a frozen
+  // pre-migration number instead of its inherited one. Those leftovers cannot be
+  // removed — a retired slot rejects writes, and registering it again binds the
+  // code to a fresh slot definition that masks them rather than exposing them —
+  // so not reading them is the only defence there is.
+  //
+  // Memoised in slot_access after the first call, so this costs one synced-storage
+  // read per realm, not one per rem.
+  await isHiddenSlotMigrated(plugin);
   const [hiddenRead, visibleRead] = rawCardPriorityReads(rem);
   const [cards, hiddenValue, visibleValue, source, lastUpdated] = await Promise.all([
     options?.preloadedCards !== undefined

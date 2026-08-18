@@ -662,14 +662,18 @@ async function completeIfVisibleSlotIsEmpty(plugin: RNPlugin): Promise<boolean> 
     );
     return false;
   }
-  // Rows gone, values still there. Retiring now would strand every one of them
-  // where nothing can write them — which is what happened on the knowledge base
-  // that produced this check: zero rows, and a value on all 45,178 tagged rems.
+  // Rows gone, values still there. Retiring now strands every one of them: a
+  // retired slot can still be READ, so those numbers stay visible to any reader
+  // that consults the slot, but it cannot be WRITTEN, so nothing can ever correct
+  // or remove them. Measured on the knowledge base that produced this check —
+  // zero rows and a value on all 45,178 tagged rems, unreachable in both
+  // directions once retired. Clearing them has to happen while the slot is still
+  // registered, which is what the migration does from v1.0.51 on.
   if (scan.withValue > 0) {
     console.log(
       `${LOG} no visible Priority rows left, but ${scan.withValue} of ${scan.tagged} rem(s) still ` +
         `hold a VALUE in that slot — deleting the row does not clear it. NOT retiring the slot: ` +
-        `run "Clear Leftovers in the Old Priority Slot…" first, which needs the slot registered.`
+        `run "Migrate Card Priorities to Hidden Slot…" once more, which now clears the values too.`
     );
     return false;
   }
@@ -701,20 +705,6 @@ export async function checkCardPriorityHiddenSlotMigration(plugin: RNPlugin): Pr
     }
 
     const record = await readHiddenSlotRecord(plugin);
-
-    // A legacy-slot cleanup has deliberately un-retired the slot and is waiting
-    // for this reload to register it. Anything this function does here fights
-    // that: the "verify and complete" path below re-retires it on the spot, which
-    // is exactly what defeated the first attempt at the three-step flow.
-    if (record?.legacyCleanupUnretiredAt) {
-      console.log(
-        `${LOG} standing down — a legacy-slot cleanup un-retired the visible slot ` +
-          `${new Date(record.legacyCleanupUnretiredAt).toLocaleString()} and is mid-flow. ` +
-          `Run "Clear Leftovers in the Old Priority Slot…" to finish it.`
-      );
-      return;
-    }
-
     if (record?.completedAt) {
       // Logged rather than returning in silence: "no output" is how a check that
       // never ran looks too, and this one is meant to be verifiable.
