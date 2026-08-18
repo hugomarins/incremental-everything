@@ -96,7 +96,7 @@ It is offered on **every start** until it has been done, because until then your
 
 Deleting the values does not delete the *slot*, so a bare `Priority — Empty` row is left behind: RemNote draws a row for every slot the plugin registers, whether or not it holds anything. It goes away once the plugin stops registering that slot — and it only does that on **positive proof** that nothing is left in it: a migration run that finished with no failures, no rows kept back and no errors, or a full scan of every tagged Rem finding none.
 
-Until then the slot stays registered, which is deliberate. An unregistered slot cannot be read, so retiring one that still held a value would turn that value into an unreadable one rather than a visible row. A knowledge base whose migration was interrupted, or finished before that check existed, gets the full scan automatically on the next start; expect one extra pass of a few seconds, once, then a reload to see the row disappear.
+Until then the slot stays registered, which is deliberate. An unregistered slot can still be *read* — but it can no longer be *written*: the plugin's write returns without error, RemNote reports a slot that doesn't exist, and nothing changes. Retiring one that still held a value would therefore strand that value where nothing can correct it. A knowledge base whose migration was interrupted, or finished before that check existed, gets the full scan automatically on the next start; expect one extra pass of a few seconds, once, then a reload to see the row disappear.
 
 ### The old value can linger behind the deleted row { #stale-visible-value }
 
@@ -104,7 +104,9 @@ Deleting the `Priority` row does not always clear the *value* underneath it. On 
 
 **It changes nothing about your priorities.** The hidden slot is what every part of the plugin reads, and it wins whenever both hold a value; a Rem prioritised after the migration has nothing in the old slot at all. What it did affect was the *debug widget*, which read the old slot and so reported that frozen number as the stored priority — and then flagged the correct, current value as a stale cache. Both now report the hidden slot, and show the leftover separately, labelled for what it is.
 
-From v1.0.50 the migration clears the value as well as the row, so new runs leave nothing behind.
+From v1.0.51 the migration clears the value as well as the row, so new runs leave nothing behind. For a knowledge base migrated before that, **Clear Leftovers in the Old Priority Slot…** removes what was left. It backs everything up, tests the write on a single Rem, and never empties a number the hidden slot does not already have — where the old slot holds the only copy, the value is moved across and verified before anything is cleared.
+
+Once the old slot has been **retired**, though, it can be read and not written: `setPowerupProperty` on it returns without error and changes nothing. So the command switches the slot back on, asks you to reload, clears the leftovers on the second run and switches it off again. Only the middle of that is uncomfortable — while the slot is on, the empty `Priority` rows are back, table cells included. Leaving the leftovers alone is a perfectly good choice: nothing in the plugin reads that slot while it is retired.
 
 !!! note "Undoing takes two steps once the slot is retired"
     A retired slot cannot be written either, so restoring into it would silently write nothing. The first run of **Undo Card Priority Hidden-Slot Migration…** un-retires the slot and asks you to reload; the second actually restores the values. Your priorities stay readable in the hidden slot in between.

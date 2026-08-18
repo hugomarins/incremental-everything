@@ -419,6 +419,17 @@ These commands tag a Rem with one of the [Utilities#queue-display-utilities](Uti
 
   📖 See [Where a priority is stored](Priorities-for-Flashcards.md#hidden-slot).
 
+- **Clear Leftovers in the Old Priority Slot…** { #clear-legacy-card-priority-slot }
+  Empties the values the migration left behind in the deprecated visible `Priority` slot. Deleting a `Priority` row does **not** clear the number stored behind it, so a Rem prioritised before the migration still holds a frozen copy of its old priority — invisible in the outline, and readable only through the API.
+
+  **One Rem is cleared and read back first.** The run tests the write on a single Rem — one whose real priority is safely in the hidden slot — and stops with an explanation if it does not land. Every priority is backed up before that, reusing the migration's backup if it is still on the device.
+
+  **If the old slot has been retired, it has to be switched back on first.** A slot the plugin no longer registers can be read but not written: `setPowerupProperty` returns without error, RemNote shows a toast saying the slot doesn't exist, and nothing changes. So the command runs in three steps — switch the slot on, reload, run again — and switches it back off itself once the sweep comes back clean. Switching it on is **not** an undo: priorities stay in the hidden slot and nothing is written back. But while it is on, RemNote draws the empty `Priority` row again on every prioritised Rem, table cells included, which is why the command asks first.
+
+  A leftover is only cleared when the hidden slot already holds a value. Where the old slot holds the **only** copy, the value is moved to the hidden slot and read back *before* the old one is emptied — the same order the migration uses.
+
+  📖 See [The old value can linger behind the deleted row](Priorities-for-Flashcards.md#stale-visible-value).
+
 - **Undo Card Priority Hidden-Slot Migration…**
   Restores every priority from the backup the migration took, which puts the visible `Priority` rows back — and with them the table-rendering problem. Reads the copy stored on this device; if that is gone, restore the downloaded JSON from the Debug popup instead.
 

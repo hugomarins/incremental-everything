@@ -92,6 +92,13 @@ import {
   undoCardPriorityHiddenSlotMigration,
   isCleanSweep,
 } from '../lib/card_priority/hidden_slot_migration';
+import {
+  runLegacyPrioritySlotCleanup,
+  readLegacyCleanupState,
+  unretireForLegacyCleanup,
+  reRetireAfterLegacyCleanup,
+  isMidLegacyCleanup,
+} from '../lib/card_priority/legacy_slot_cleanup';
 import { computeClozeAutoPriority, ClozeAutoPriorityInfo } from '../lib/cloze_priority';
 import {
   REMOVE_PARENT_POWERUP_CODE,
@@ -2028,6 +2035,123 @@ export async function registerCommands(plugin: ReactRNPlugin) {
             : `Re-run this command to retry the rem(s) left behind. The old slot stays ` +
               `registered until none are left.\n\n`) +
           `Reload RemNote to see your tables render their real content.`
+      );
+    },
+  });
+
+  // The leftovers the migration could not know about: deleting a visible slot's
+  // property child does NOT clear the value behind it, so every rem migrated
+  // before v1.0.51 still answers the retired slot with its pre-migration number.
+  // See lib/card_priority/legacy_slot_cleanup.ts.
+  await plugin.app.registerCommand({
+    id: 'clear-legacy-card-priority-slot',
+    name: 'Clear Leftovers in the Old Priority Slot…',
+    description:
+      'Empty the values the hidden-slot migration left behind in the deprecated visible Priority ' +
+      'slot. Tests one rem first, and never clears a number the hidden slot does not already have.',
+    action: async () => {
+      const kbName = (await plugin.kb.getCurrentKnowledgeBaseData())?.name || 'this knowledge base';
+
+      if (!(await isHiddenSlotMigrated(plugin))) {
+        alert(
+          `Nothing to clear — "${kbName}"\n\nThis knowledge base has not been migrated, so the ` +
+            `visible Priority slot is still the one in use. Run "Migrate Card Priorities to ` +
+            `Hidden Slot…" first.`
+        );
+        return;
+      }
+
+      const previous = await readLegacyCleanupState(plugin);
+      const go = confirm(
+        `🧹 Clear leftovers in the old Priority slot — "${kbName}"\n\n` +
+          (previous.clearedAt
+            ? `A previous run on ${new Date(previous.clearedAt).toLocaleString()} cleared ` +
+              `${previous.count}. Running again looks for any it missed.\n\n`
+            : '') +
+          `The migration deleted the "Priority" rows but not the numbers behind them, so rems ` +
+          `prioritised before it still hold a frozen copy of their old priority. Your real ` +
+          `priorities are in the hidden slot and are not touched.\n\n` +
+          `One rem is cleared and read back FIRST: if the write does not land on a retired slot, ` +
+          `the run stops there and tells you. Every priority is backed up before that.\n\n` +
+          `This walks every tagged rem and writes to the ones carrying a leftover, so on a large ` +
+          `library expect it to take a while.\n\n` +
+          `OK = run it now    •    Cancel = abort`
+      );
+      if (!go) {
+        await plugin.app.toast('Cleanup cancelled');
+        return;
+      }
+
+      const result = await runLegacyPrioritySlotCleanup(plugin, migrationProgressReporter(plugin));
+
+      // The slot is retired. Writing to it is a silent no-op, so the only way in
+      // is to register it again — which needs a reload, and costs an empty
+      // "Priority" row on every tagged rem until this finishes. That is the
+      // user's call, stated plainly.
+      if (result.needsUnretire) {
+        const open = confirm(
+          `⚠️ The old slot has to be switched back on first — "${kbName}"\n\n` +
+            `${result.aborted}\n\n` +
+            `Switching it back on is NOT an undo: your priorities stay in the hidden slot and ` +
+            `nothing is written back. But while it is on, RemNote draws the empty "Priority" row ` +
+            `again on every prioritised Rem — including inside table cells, where that row is ` +
+            `what covers up the cell's own content.\n\n` +
+            `Three steps: OK switches it on → RELOAD RemNote → run this command again, which ` +
+            `clears the leftovers and switches it back off.\n\n` +
+            `OK = switch it on    •    Cancel = leave the leftovers alone (they are ignored by ` +
+            `every part of the plugin)`
+        );
+        if (!open) {
+          await plugin.app.toast('Left as they are');
+          return;
+        }
+        await unretireForLegacyCleanup(plugin);
+        alert(
+          `Step 1 of 3 done — "${kbName}"\n\nRELOAD RemNote now, then run "Clear Leftovers in ` +
+            `the Old Priority Slot…" again to finish. Until you do, expect the empty "Priority" ` +
+            `rows to be back.`
+        );
+        return;
+      }
+
+      if (result.aborted) {
+        // Anything that stops the run while the slot is un-retired must offer the
+        // way back: the window was opened for a cleanup that is not going to
+        // happen, and leaving it open means the empty "Priority" rows stay.
+        const midFlow = await isMidLegacyCleanup(plugin);
+        alert(
+          `${result.probe.attempted ? '⚠️' : 'ℹ️'} Cleanup did not run\n\n` +
+            `${result.aborted}\n\n` +
+            (result.probe.attempted
+              ? `Probed rem: ${result.probe.remId} (old slot "${result.probe.before}", ` +
+                `real priority "${result.probe.hidden}").\n\n`
+              : '') +
+            `Backup: ${result.backupNote}`
+        );
+        if (midFlow) {
+          const close = confirm(
+            `Switch the old slot back off?\n\nIt is currently registered because this cleanup ` +
+              `switched it on, which is why the empty "Priority" rows are back. Nothing was ` +
+              `cleared, so there is no reason to leave it on.\n\n` +
+              `OK = switch it off (then RELOAD)    •    Cancel = leave it on and try again`
+          );
+          if (close) {
+            await reRetireAfterLegacyCleanup(plugin);
+            alert('Switched back off. RELOAD RemNote to see the empty "Priority" rows go away.');
+          }
+        }
+        return;
+      }
+
+      const r = result.report!;
+      alert(
+        `✅ Old Priority slot cleared — "${kbName}"\n\n${r.verdict}\n\n` +
+          (result.reRetired
+            ? `The slot has been switched back off. RELOAD RemNote to see the empty "Priority" ` +
+              `rows go away again.\n\n`
+            : '') +
+          `Backup: ${result.backupNote}` +
+          (r.errorSamples.length ? `\n\nSamples:\n${r.errorSamples.join('\n')}` : '')
       );
     },
   });

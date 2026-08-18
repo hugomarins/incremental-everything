@@ -4,6 +4,18 @@ This page documents the major changes and improvements for each version of the I
 
 ## v1.0.51 - August 18th, 2026
 
+### ✨ New - clear the leftovers the priority migration could not see
+
+**Clear Leftovers in the Old Priority Slot…** empties the numbers left behind in the deprecated visible `Priority` slot. Deleting that slot's row does **not** clear the value stored behind it, so a Rem prioritised before the migration still holds a frozen copy of its old priority — invisible in the outline, and reachable only through the API.
+
+Your real priorities are unaffected: they live in the hidden slot, which is what every part of the plugin reads. The leftover is a second, silently diverging copy, and it matters only if anything ever reads that slot again.
+
+The run **tests one Rem first**, and everything is backed up before that. A leftover is only cleared when the hidden slot already holds a value; where the old slot holds the **only** copy, the value is moved across and read back *before* the old one is emptied.
+
+**If the old slot has already been retired, clearing takes three steps.** A retired slot can be read but not written — `setPowerupProperty` on it returns without error and changes nothing at all — so the command switches the slot back on, asks you to reload, then clears the leftovers and switches it off again. Switching it on is not an undo, but while it is on the empty `Priority` rows come back, table cells included, so the command asks before doing it. Leaving the leftovers alone is also fine: nothing reads that slot while it is retired.
+
+📖 [Clear Leftovers in the Old Priority Slot…](Plugin-Commands-Reference.md#clear-legacy-card-priority-slot)
+
 ### 🐛 Fixed - the debug widget reported an out-of-date priority
 
 The **Card Priority** panel showed the value a Rem had *before* the hidden-slot migration, and then flagged the current one as a stale cache. The number in use — in the Priority popup, the queue and everywhere else — was always the right one.
