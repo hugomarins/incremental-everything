@@ -319,6 +319,9 @@ function buildTimelineDays(
                 startMs: key,
                 cardReps: 0,
                 cardForgot: 0,
+                cardHard: 0,
+                cardGood: 0,
+                cardEasy: 0,
                 incReps: 0,
                 cardTimeMs: 0,
                 incTimeMs: 0,
@@ -348,7 +351,12 @@ function buildTimelineDays(
                 const b = dayBucket(rep.date);
                 b.cardReps += 1;
                 b.cardTimeMs += Math.min(Math.max(0, rep.responseTime || 0), cardCapMs);
+                // isRealCardScore already dropped skips, so these four partition
+                // the bucket's reps.
                 if (rep.score === QueueInteractionScore.AGAIN) b.cardForgot += 1;
+                else if (rep.score === QueueInteractionScore.HARD) b.cardHard += 1;
+                else if (rep.score === QueueInteractionScore.GOOD) b.cardGood += 1;
+                else if (rep.score === QueueInteractionScore.EASY) b.cardEasy += 1;
             }
         }
     }

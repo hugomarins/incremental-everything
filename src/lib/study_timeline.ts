@@ -18,6 +18,9 @@ export interface TimelineDay {
     cardReps: number;
     /** Card reps graded AGAIN — what retention is measured against. */
     cardForgot: number;
+    cardHard: number;
+    cardGood: number;
+    cardEasy: number;
     incReps: number;
     cardTimeMs: number;
     incTimeMs: number;
@@ -38,9 +41,21 @@ export interface TimelineBucket {
     startMs: number;
     cardReps: number;
     cardForgot: number;
+    cardHard: number;
+    cardGood: number;
+    cardEasy: number;
     incReps: number;
     cardTimeMs: number;
     incTimeMs: number;
+    /**
+     * Each grade's share of this bucket's card reps. Skips never reach here, so
+     * the four add up to 100 — which is what makes them comparable between a
+     * 40-rep bucket and an 800-rep one.
+     */
+    pctAgain: number | null;
+    pctHard: number | null;
+    pctGood: number | null;
+    pctEasy: number | null;
     /**
      * Percentage of this bucket's card reps that were *not* graded AGAIN, or
      * null when the bucket holds no card reps — a bucket you did not study has
@@ -121,6 +136,9 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
         startMs: number;
         cardReps: number;
         cardForgot: number;
+        cardHard: number;
+        cardGood: number;
+        cardEasy: number;
         incReps: number;
         cardTimeMs: number;
         incTimeMs: number;
@@ -133,6 +151,9 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
         if (acc) {
             acc.cardReps += day.cardReps;
             acc.cardForgot += day.cardForgot;
+            acc.cardHard += day.cardHard;
+            acc.cardGood += day.cardGood;
+            acc.cardEasy += day.cardEasy;
             acc.incReps += day.incReps;
             acc.cardTimeMs += day.cardTimeMs;
             acc.incTimeMs += day.incTimeMs;
@@ -141,6 +162,9 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
                 startMs: start,
                 cardReps: day.cardReps,
                 cardForgot: day.cardForgot,
+                cardHard: day.cardHard,
+                cardGood: day.cardGood,
+                cardEasy: day.cardEasy,
                 incReps: day.incReps,
                 cardTimeMs: day.cardTimeMs,
                 incTimeMs: day.incTimeMs,
@@ -170,9 +194,16 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
             startMs,
             cardReps: d?.cardReps ?? 0,
             cardForgot: d?.cardForgot ?? 0,
+            cardHard: d?.cardHard ?? 0,
+            cardGood: d?.cardGood ?? 0,
+            cardEasy: d?.cardEasy ?? 0,
             incReps: d?.incReps ?? 0,
             cardTimeMs: d?.cardTimeMs ?? 0,
             incTimeMs: d?.incTimeMs ?? 0,
+            pctAgain: shareOf(d?.cardForgot ?? 0, d?.cardReps ?? 0),
+            pctHard: shareOf(d?.cardHard ?? 0, d?.cardReps ?? 0),
+            pctGood: shareOf(d?.cardGood ?? 0, d?.cardReps ?? 0),
+            pctEasy: shareOf(d?.cardEasy ?? 0, d?.cardReps ?? 0),
             retention: retentionOf(d?.cardReps ?? 0, d?.cardForgot ?? 0),
             speedCpm: cpmOf(d?.cardReps ?? 0, d?.cardTimeMs ?? 0),
             speedSecPerCard: secPerCardOf(d?.cardReps ?? 0, d?.cardTimeMs ?? 0),
@@ -184,6 +215,12 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
         curKey = nextKey;
     }
     return buckets;
+}
+
+/** One grade's share of a bucket's reps, as a percentage. Null with no reps. */
+export function shareOf(count: number, total: number): number | null {
+    if (total <= 0) return null;
+    return (count / total) * 100;
 }
 
 /**

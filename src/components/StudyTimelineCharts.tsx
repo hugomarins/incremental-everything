@@ -6,6 +6,7 @@
  *   2. Time    — flashcard time vs IncRem time, stacked or side by side
  *   3. Retention — the Summary's "Ret." column over time, on its reps
  *   4. Speed     — the Summary's cpm column over time, on its reps
+ *   5. Answer breakdown — how the four grades split, bucket by bucket
  *
  * Flashcard *counts* dwarf IncRem counts in a typical KB, so the Reviews chart
  * gives each series its own y-axis; the times are comparable, so that chart
@@ -50,6 +51,7 @@ import {
     fitPercentAxis,
     fitRateAxis,
     retentionOf,
+    shareOf,
     cpmOf,
     secPerCardOf,
     rollUpWithinBudget,
@@ -64,6 +66,17 @@ const TOTAL_COLOR = '#8b5cf6';
 const RETENTION_COLOR = '#16a34a';
 const SPEED_COLOR = '#0891b2';
 
+// Answer grades, worst to best. RemNote labels these Forgot / Partially
+// Recalled / Recalled With Effort / Easily Recalled; the short names are what
+// the queue's own buttons say.
+//
+// The colours are Anki's — red, orange, green, blue — because that mapping is
+// the one spaced-repetition users already read without thinking.
+const AGAIN_COLOR = '#ef4444';
+const HARD_COLOR = '#f59e0b';
+const GOOD_COLOR = '#16a34a';
+const EASY_COLOR = '#3b82f6';
+
 /**
  * Unit for the Speed chart. Shares the Practiced Queues summary table's storage
  * key on purpose: one speed unit for the whole plugin, per device.
@@ -71,11 +84,34 @@ const SPEED_COLOR = '#0891b2';
 type SpeedUnit = 'cpm' | 'spc';
 const SPEED_UNIT_KEY = 'summarySpeedUnit';
 
-const sumOf = (view: TimelineBucket[], key: 'cardReps' | 'cardForgot' | 'cardTimeMs') =>
-    view.reduce((total, b) => total + b[key], 0);
+const sumOf = (
+    view: TimelineBucket[],
+    key: 'cardReps' | 'cardForgot' | 'cardHard' | 'cardGood' | 'cardEasy' | 'cardTimeMs'
+) => view.reduce((total, b) => total + b[key], 0);
 
 const formatOrDash = (v: number | null, format: (n: number) => string) =>
     v == null ? null : format(v);
+
+/**
+ * One grade's share over time. The totals line can't sum percentages, so each
+ * recomputes its share from the grade's own count over the visible reps.
+ */
+const ratingSeries = (
+    key: 'pctAgain' | 'pctHard' | 'pctGood' | 'pctEasy',
+    countKey: 'cardForgot' | 'cardHard' | 'cardGood' | 'cardEasy',
+    name: string,
+    color: string,
+    axis: 'left' | 'right'
+): SeriesDef => ({
+    key,
+    name,
+    color,
+    kind: 'percent',
+    mark: 'line',
+    axis,
+    aggregate: (view) =>
+        formatOrDash(shareOf(sumOf(view, countKey), sumOf(view, 'cardReps')), formatPercent),
+});
 
 /**
  * How a series' numbers are read. Counts and times grow from a zero baseline;
@@ -99,9 +135,27 @@ interface SeriesDef {
     name: string;
     color: string;
     kind: ValueKind;
+    /** Which y-axis this series is measured against. Default 'left'. */
+    axis?: 'left' | 'right';
+    /**
+     * Default 'bar'. Rates and percentages take 'line': they are not quantities
+     * that accumulate from a zero baseline, and a bar would say they are.
+     */
+    mark?: 'bar' | 'line';
     /** Overrides the kind's default formatting — a rate can be cpm or s/card. */
     format?: (v: number) => string;
+    /** Backing volume behind a rate: drawn as context, not as the subject. */
+    faint?: boolean;
+    /**
+     * Figure for the totals line. A rate over a range is not the sum of its
+     * buckets, so those series recompute it from the reps and time inside the
+     * visible range. Defaults to summing.
+     */
+    aggregate?: (view: TimelineBucket[]) => string | null;
 }
+
+const axisOf = (s: SeriesDef) => s.axis ?? 'left';
+const isLine = (s: SeriesDef) => (s.mark ?? 'bar') === 'line';
 
 const formatWith = (series: SeriesDef, v: number) =>
     series.format ? series.format(v) : fullFormatterFor(series.kind)(v);
@@ -127,6 +181,7 @@ function ChartTooltip({
     granularity,
     showTotal,
     totalKind,
+    extraRows,
 }: {
     active?: boolean;
     payload?: any[];
@@ -135,6 +190,8 @@ function ChartTooltip({
     granularity: TimelineGranularity;
     showTotal: boolean;
     totalKind?: ValueKind;
+    /** Context the lines don't carry, e.g. the rep count behind four shares. */
+    extraRows?: (bucket: TimelineBucket) => { label: string; value: string }[];
 }) {
     if (!active || !payload || payload.length === 0) return null;
     const bucket = payload[0]?.payload as TimelineBucket | undefined;
@@ -164,6 +221,19 @@ function ChartTooltip({
                     </div>
                 );
             })}
+            {extraRows?.(bucket).map((row) => (
+                <div
+                    key={row.label}
+                    style={{
+                        color: 'var(--rn-clr-content-secondary)',
+                        marginTop: 3,
+                        paddingTop: 3,
+                        borderTop: '1px solid var(--rn-clr-border-primary)',
+                    }}
+                >
+                    {row.label}: {row.value}
+                </div>
+            ))}
             {showTotal && payload.length > 1 && (
                 <div
                     style={{
@@ -188,14 +258,11 @@ function TimelineChart({
     title,
     subtitle,
     data,
-    leftSeries,
-    rightSeries,
-    leftAsLine,
-    dualAxis,
+    series,
     stacked,
     showTotal,
     granularity,
-    leftAggregate,
+    tooltipExtraRows,
     zoom,
     setZoom,
     headerExtra,
@@ -203,26 +270,18 @@ function TimelineChart({
     title: string;
     subtitle: string;
     data: TimelineBucket[];
-    leftSeries: SeriesDef;
-    rightSeries: SeriesDef;
     /**
-     * Draw the left series as a line instead of a bar. Rates are not quantities
-     * that stack up from zero, so a bar would misrepresent them.
+     * What to draw. Each series names its axis and its mark, so one component
+     * covers bars against bars, a rate line over its backing volume, and four
+     * shares split across two axes.
      */
-    leftAsLine?: boolean;
-    /** false = every series shares the left axis (comparable magnitudes). */
-    dualAxis: boolean;
-    /** Single-axis only: stack the two series so the bar height is their total. */
+    series: SeriesDef[];
+    /** Stack the bar series sharing an axis, making the bar height their total. */
     stacked?: boolean;
-    /** Report the two series' sum in the tooltip and the totals line. */
+    /** Report the bar series' sum in the tooltip and the totals line. */
     showTotal?: boolean;
     granularity: TimelineGranularity;
-    /**
-     * Replaces the left series' figure in the totals line. A rate over a range
-     * is not the sum of its buckets — it has to be recomputed from the reps and
-     * time inside them.
-     */
-    leftAggregate?: (view: TimelineBucket[]) => string | null;
+    tooltipExtraRows?: (bucket: TimelineBucket) => { label: string; value: string }[];
     zoom: ZoomState;
     setZoom: React.Dispatch<React.SetStateAction<ZoomState>>;
     headerExtra?: React.ReactNode;
@@ -234,45 +293,64 @@ function TimelineChart({
         return data;
     }, [data, zoom.startIndex, zoom.endIndex]);
 
-    // On a single axis both series share one ceiling — the sum of the two when
-    // they are stacked, the taller of the two when they sit side by side.
-    const isStacked = !dualAxis && !!stacked;
-    const leftValues = view
-        .map((b) => b[leftSeries.key] as number | null)
-        .filter((v): v is number => v != null);
-    const leftMax = Math.max(
-        0,
-        ...view.map((b) => {
-            const left = (b[leftSeries.key] as number) ?? 0;
-            const right = (b[rightSeries.key] as number) ?? 0;
-            if (dualAxis) return left;
-            return isStacked ? left + right : Math.max(left, right);
-        })
-    );
-    const rightMax = Math.max(0, ...view.map((b) => (b[rightSeries.key] as number) ?? 0));
-
-    // Percentages and rates are fitted to a band around their values; counts
-    // and times grow from a zero baseline.
-    const leftBandAxis = !isBanded(leftSeries.kind)
-        ? null
-        : (leftSeries.kind === 'percent' ? fitPercentAxis : fitRateAxis)(
-              leftValues.length ? Math.min(...leftValues) : 0,
-              leftValues.length ? Math.max(...leftValues) : leftSeries.kind === 'percent' ? 100 : 1
-          );
-    const leftCountAxis = fitAxis(leftMax, leftSeries.kind === 'time' ? 'time' : 'count');
-    const leftDomain: [number, number] = leftBandAxis
-        ? [leftBandAxis.min, leftBandAxis.max]
-        : [0, leftCountAxis.max];
-    const leftTicks = leftBandAxis ? leftBandAxis.ticks : leftCountAxis.ticks;
-    const rightAxis = fitAxis(rightMax, rightSeries.kind === 'time' ? 'time' : 'count');
-    const rightAxisId = dualAxis ? 'right' : 'left';
-
-    const leftTotal = view.reduce((sum, b) => sum + ((b[leftSeries.key] as number) ?? 0), 0);
-    const rightTotal = view.reduce((sum, b) => sum + ((b[rightSeries.key] as number) ?? 0), 0);
-    const seriesByKey: Record<string, SeriesDef> = {
-        [leftSeries.key as string]: leftSeries,
-        [rightSeries.key as string]: rightSeries,
+    const bySide = {
+        left: series.filter((x) => axisOf(x) === 'left'),
+        right: series.filter((x) => axisOf(x) === 'right'),
     };
+    // Only bars on the same axis can stack, and only when asked.
+    const stackedSide = (side: 'left' | 'right') =>
+        !!stacked && bySide[side].filter((x) => !isLine(x)).length > 1;
+
+    const fitSide = (side: 'left' | 'right') => {
+        const sides = bySide[side];
+        if (sides.length === 0) return null;
+        const kind = sides[0].kind;
+        const values = view.flatMap((b) =>
+            sides
+                .map((x) => b[x.key] as number | null)
+                .filter((v): v is number => v != null)
+        );
+        if (isBanded(kind)) {
+            const fit = kind === 'percent' ? fitPercentAxis : fitRateAxis;
+            const axis = fit(
+                values.length ? Math.min(...values) : 0,
+                values.length ? Math.max(...values) : kind === 'percent' ? 100 : 1
+            );
+            return { kind, domain: [axis.min, axis.max] as [number, number], ticks: axis.ticks };
+        }
+        // Stacked bars have to fit their sum; side-by-side bars, the tallest one.
+        const max = Math.max(
+            0,
+            ...view.map((b) =>
+                stackedSide(side)
+                    ? sides.reduce((sum, x) => sum + ((b[x.key] as number) ?? 0), 0)
+                    : Math.max(...sides.map((x) => (b[x.key] as number) ?? 0))
+            )
+        );
+        const axis = fitAxis(max, kind === 'time' ? 'time' : 'count');
+        return { kind, domain: [0, axis.max] as [number, number], ticks: axis.ticks };
+    };
+
+    const leftAxis = fitSide('left');
+    const rightAxis = fitSide('right');
+
+    // One series owns the axis colour; several sharing it get a neutral one.
+    const axisColor = (side: 'left' | 'right') =>
+        bySide[side].length === 1 ? bySide[side][0].color : 'var(--rn-clr-content-tertiary)';
+
+    const seriesByKey: Record<string, SeriesDef> = {};
+    for (const x of series) seriesByKey[x.key as string] = x;
+
+    const barSeries = series.filter((x) => !isLine(x));
+    const lineSeries = series.filter(isLine);
+    // A rate chart with nothing to measure would render an empty plot with a
+    // silent axis; say so instead. Only rate/percent series can be null — a
+    // count of zero is data.
+    const noRateData =
+        lineSeries.length > 0 && !view.some((b) => lineSeries.some((x) => b[x.key] != null));
+
+    const totalOf = (x: SeriesDef) =>
+        view.reduce((sum, b) => sum + ((b[x.key] as number) ?? 0), 0);
 
     const commitZoom = () => {
         const { refAreaLeft, refAreaRight } = zoom;
@@ -298,14 +376,30 @@ function TimelineChart({
         });
     };
 
-    // A rate chart with nothing to measure would render an empty plot with a
-    // silent axis; say so instead. Only rate/percent series can be null — a
-    // count of zero is data.
-    const noRateData = !!leftAsLine && !view.some((b) => b[leftSeries.key] != null);
-
     const tickFormatter = (key: string) => {
         const b = view.find((x) => x.key === key);
         return b ? b.label : key;
+    };
+
+    const renderAxis = (side: 'left' | 'right') => {
+        const axis = side === 'left' ? leftAxis : rightAxis;
+        if (!axis) return null;
+        const own = bySide[side][0];
+        return (
+            <YAxis
+                yAxisId={side}
+                orientation={side}
+                stroke={axisColor(side)}
+                domain={axis.domain}
+                ticks={axis.ticks}
+                tickFormatter={(v: number) =>
+                    own.format ? own.format(v) : tickFormatterFor(axis.kind)(v)
+                }
+                tick={{ fontSize: 10 }}
+                width={48}
+                allowDataOverflow
+            />
+        );
     };
 
     return (
@@ -359,151 +453,122 @@ function TimelineChart({
                     No flashcard reviews in this range.
                 </div>
             ) : (
-            <ResponsiveContainer width="100%" height={320} debounce={50}>
-                <ComposedChart
-                    data={view}
-                    margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
-                    onMouseDown={(e: any) => {
-                        if (e && e.activeLabel) {
-                            setZoom((prev) => ({
-                                ...prev,
-                                refAreaLeft: e.activeLabel,
-                                refAreaRight: e.activeLabel,
-                            }));
-                        }
-                    }}
-                    onMouseMove={(e: any) => {
-                        setZoom((prev) =>
-                            prev.refAreaLeft && e && e.activeLabel && e.activeLabel !== prev.refAreaRight
-                                ? { ...prev, refAreaRight: e.activeLabel }
-                                : prev
-                        );
-                    }}
-                    onMouseUp={commitZoom}
-                    onMouseLeave={() => {
-                        if (zoom.refAreaLeft) commitZoom();
-                    }}
-                >
-                    <CartesianGrid strokeDasharray="3 3" opacity={0.35} />
-                    <XAxis
-                        dataKey="key"
-                        tickFormatter={tickFormatter}
-                        tick={{ fontSize: 10 }}
-                        minTickGap={16}
-                        interval="preserveStartEnd"
-                        angle={-35}
-                        textAnchor="end"
-                        height={52}
-                    />
-                    <YAxis
-                        yAxisId="left"
-                        orientation="left"
-                        stroke={leftSeries.color}
-                        domain={leftDomain}
-                        ticks={leftTicks}
-                        tickFormatter={(v: number) =>
-                            leftSeries.format
-                                ? leftSeries.format(v)
-                                : tickFormatterFor(leftSeries.kind)(v)
-                        }
-                        tick={{ fontSize: 10 }}
-                        width={48}
-                        allowDataOverflow
-                    />
-                    {dualAxis && (
-                        <YAxis
-                            yAxisId="right"
-                            orientation="right"
-                            stroke={rightSeries.color}
-                            domain={[0, rightAxis.max]}
-                            ticks={rightAxis.ticks}
-                            tickFormatter={tickFormatterFor(rightSeries.kind)}
+                <ResponsiveContainer width="100%" height={320} debounce={50}>
+                    <ComposedChart
+                        data={view}
+                        margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
+                        onMouseDown={(e: any) => {
+                            if (e && e.activeLabel) {
+                                setZoom((prev) => ({
+                                    ...prev,
+                                    refAreaLeft: e.activeLabel,
+                                    refAreaRight: e.activeLabel,
+                                }));
+                            }
+                        }}
+                        onMouseMove={(e: any) => {
+                            setZoom((prev) =>
+                                prev.refAreaLeft &&
+                                e &&
+                                e.activeLabel &&
+                                e.activeLabel !== prev.refAreaRight
+                                    ? { ...prev, refAreaRight: e.activeLabel }
+                                    : prev
+                            );
+                        }}
+                        onMouseUp={commitZoom}
+                        onMouseLeave={() => {
+                            if (zoom.refAreaLeft) commitZoom();
+                        }}
+                    >
+                        <CartesianGrid strokeDasharray="3 3" opacity={0.35} />
+                        <XAxis
+                            dataKey="key"
+                            tickFormatter={tickFormatter}
                             tick={{ fontSize: 10 }}
-                            width={48}
+                            minTickGap={16}
+                            interval="preserveStartEnd"
+                            angle={-35}
+                            textAnchor="end"
+                            height={52}
                         />
-                    )}
-                    <Tooltip
-                        content={
-                            <ChartTooltip
-                                seriesByKey={seriesByKey}
-                                granularity={granularity}
-                                showTotal={!!showTotal}
-                                totalKind={leftSeries.kind}
+                        {renderAxis('left')}
+                        {renderAxis('right')}
+                        <Tooltip
+                            content={
+                                <ChartTooltip
+                                    seriesByKey={seriesByKey}
+                                    granularity={granularity}
+                                    showTotal={!!showTotal}
+                                    totalKind={barSeries[0]?.kind}
+                                    extraRows={tooltipExtraRows}
+                                />
+                            }
+                            cursor={{ fill: 'rgba(128,128,128,0.12)' }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+                        {barSeries.map((x) => {
+                            const side = axisOf(x);
+                            const isStacked = stackedSide(side);
+                            return (
+                                <Bar
+                                    key={x.key as string}
+                                    yAxisId={side}
+                                    stackId={isStacked ? `stack-${side}` : undefined}
+                                    dataKey={x.key as string}
+                                    name={x.name}
+                                    fill={x.color}
+                                    fillOpacity={x.faint ? 0.3 : 1}
+                                    // Only the top of a stack gets rounded corners, or the
+                                    // segments read as separate bars sitting on each other.
+                                    radius={isStacked ? undefined : [2, 2, 0, 0]}
+                                    isAnimationActive={false}
+                                />
+                            );
+                        })}
+                        {lineSeries.map((x) => (
+                            <Line
+                                key={x.key as string}
+                                yAxisId={axisOf(x)}
+                                type="monotone"
+                                dataKey={x.key as string}
+                                name={x.name}
+                                stroke={x.color}
+                                strokeWidth={2}
+                                // Buckets with nothing to measure stay a gap: joining
+                                // across them would draw a rate that was never observed.
+                                connectNulls={false}
+                                dot={view.length <= 60 ? { r: 2.5 } : false}
+                                activeDot={{ r: 5 }}
+                                isAnimationActive={false}
                             />
-                        }
-                        cursor={{ fill: 'rgba(128,128,128,0.12)' }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
-                    {leftAsLine ? (
-                        <Line
-                            yAxisId="left"
-                            type="monotone"
-                            dataKey={leftSeries.key as string}
-                            name={leftSeries.name}
-                            stroke={leftSeries.color}
-                            strokeWidth={2}
-                            // Buckets with nothing to measure stay a gap: joining
-                            // across them would draw a rate that was never observed.
-                            connectNulls={false}
-                            dot={view.length <= 60 ? { r: 2.5 } : false}
-                            activeDot={{ r: 5 }}
-                            isAnimationActive={false}
-                        />
-                    ) : (
-                        <Bar
-                            yAxisId="left"
-                            stackId={isStacked ? 'stack' : undefined}
-                            dataKey={leftSeries.key as string}
-                            name={leftSeries.name}
-                            fill={leftSeries.color}
-                            // Only the top of a stack gets rounded corners, or the
-                            // segments read as separate bars sitting on each other.
-                            radius={isStacked ? undefined : [2, 2, 0, 0]}
-                            isAnimationActive={false}
-                        />
-                    )}
-                    <Bar
-                        yAxisId={rightAxisId}
-                        stackId={isStacked ? 'stack' : undefined}
-                        dataKey={rightSeries.key as string}
-                        name={rightSeries.name}
-                        fill={rightSeries.color}
-                        // Backing volume for a rate is context, not the subject —
-                        // it must not out-shout the line in front of it.
-                        fillOpacity={leftAsLine ? 0.3 : 1}
-                        radius={[2, 2, 0, 0]}
-                        isAnimationActive={false}
-                    />
-                    {zoom.refAreaLeft && zoom.refAreaRight ? (
-                        <ReferenceArea
-                            yAxisId="left"
-                            x1={zoom.refAreaLeft}
-                            x2={zoom.refAreaRight}
-                            strokeOpacity={0.3}
-                            fill="#8884d8"
-                        />
-                    ) : null}
-                </ComposedChart>
-            </ResponsiveContainer>
+                        ))}
+                        {zoom.refAreaLeft && zoom.refAreaRight ? (
+                            <ReferenceArea
+                                yAxisId={leftAxis ? 'left' : 'right'}
+                                x1={zoom.refAreaLeft}
+                                x2={zoom.refAreaRight}
+                                strokeOpacity={0.3}
+                                fill="#8884d8"
+                            />
+                        ) : null}
+                    </ComposedChart>
+                </ResponsiveContainer>
             )}
 
             <div className="text-xs mt-1 flex gap-4 flex-wrap" style={{ opacity: 0.75 }}>
-                <span>
-                    <span style={{ color: leftSeries.color, fontWeight: 600 }}>
-                        {leftSeries.name}:
-                    </span>{' '}
-                    {leftAggregate ? leftAggregate(view) ?? '—' : formatWith(leftSeries, leftTotal)}
-                </span>
-                <span>
-                    <span style={{ color: rightSeries.color, fontWeight: 600 }}>
-                        {rightSeries.name}:
-                    </span>{' '}
-                    {formatWith(rightSeries, rightTotal)}
-                </span>
+                {series.map((x) => (
+                    <span key={x.key as string}>
+                        <span style={{ color: x.color, fontWeight: 600 }}>{x.name}:</span>{' '}
+                        {x.aggregate ? x.aggregate(view) ?? '—' : formatWith(x, totalOf(x))}
+                    </span>
+                ))}
                 {showTotal && (
                     <span>
                         <span style={{ color: TOTAL_COLOR, fontWeight: 600 }}>Total:</span>{' '}
-                        {fullFormatterFor(leftSeries.kind)(leftTotal + rightTotal)}
+                        {fullFormatterFor(barSeries[0]?.kind ?? 'count')(
+                            barSeries.reduce((sum, x) => sum + totalOf(x), 0)
+                        )}
                     </span>
                 )}
                 <span style={{ opacity: 0.7 }}>
@@ -614,9 +679,16 @@ export function StudyTimelineCharts({
                         title="Reviews"
                         subtitle="Flashcard reps (left axis) and IncRem reps (right axis) per bucket."
                         data={buckets}
-                        leftSeries={{ key: 'cardReps', name: 'Flashcards', color: CARD_COLOR, kind: 'count' }}
-                        rightSeries={{ key: 'incReps', name: 'IncRems', color: INC_COLOR, kind: 'count' }}
-                        dualAxis
+                        series={[
+                            { key: 'cardReps', name: 'Flashcards', color: CARD_COLOR, kind: 'count' },
+                            {
+                                key: 'incReps',
+                                name: 'IncRems',
+                                color: INC_COLOR,
+                                kind: 'count',
+                                axis: 'right',
+                            },
+                        ]}
                         granularity={effectiveGranularity}
                         zoom={zoom}
                         setZoom={setZoom}
@@ -629,9 +701,10 @@ export function StudyTimelineCharts({
                                 : 'Flashcard and IncRem time per bucket, side by side on one shared scale.'
                         }
                         data={buckets}
-                        leftSeries={{ key: 'cardTimeMs', name: 'Flashcards', color: CARD_COLOR, kind: 'time' }}
-                        rightSeries={{ key: 'incTimeMs', name: 'IncRems', color: INC_COLOR, kind: 'time' }}
-                        dualAxis={false}
+                        series={[
+                            { key: 'cardTimeMs', name: 'Flashcards', color: CARD_COLOR, kind: 'time' },
+                            { key: 'incTimeMs', name: 'IncRems', color: INC_COLOR, kind: 'time' },
+                        ]}
                         stacked={stacked}
                         showTotal
                         granularity={effectiveGranularity}
@@ -657,27 +730,29 @@ export function StudyTimelineCharts({
                         title="Retention"
                         subtitle="Share of flashcard reps not graded Again, over the reps behind it."
                         data={buckets}
-                        leftSeries={{
-                            key: 'retention',
-                            name: 'Retention',
-                            color: RETENTION_COLOR,
-                            kind: 'percent',
-                        }}
-                        rightSeries={{
-                            key: 'cardReps',
-                            name: 'Flashcard reps',
-                            color: CARD_COLOR,
-                            kind: 'count',
-                        }}
-                        leftAsLine
-                        dualAxis
+                        series={[
+                            {
+                                key: 'retention',
+                                name: 'Retention',
+                                color: RETENTION_COLOR,
+                                kind: 'percent',
+                                mark: 'line',
+                                aggregate: (v) =>
+                                    formatOrDash(
+                                        retentionOf(sumOf(v, 'cardReps'), sumOf(v, 'cardForgot')),
+                                        formatPercent
+                                    ),
+                            },
+                            {
+                                key: 'cardReps',
+                                name: 'Flashcard reps',
+                                color: CARD_COLOR,
+                                kind: 'count',
+                                axis: 'right',
+                                faint: true,
+                            },
+                        ]}
                         granularity={effectiveGranularity}
-                        leftAggregate={(v) =>
-                            formatOrDash(
-                                retentionOf(sumOf(v, 'cardReps'), sumOf(v, 'cardForgot')),
-                                formatPercent
-                            )
-                        }
                         zoom={zoom}
                         setZoom={setZoom}
                     />
@@ -689,33 +764,38 @@ export function StudyTimelineCharts({
                                 : 'Seconds spent per flashcard, over the reps behind it.'
                         }
                         data={buckets}
-                        leftSeries={{
-                            key: speedUnit === 'cpm' ? 'speedCpm' : 'speedSecPerCard',
-                            name: speedUnit === 'cpm' ? 'Speed (cpm)' : 'Speed (s/card)',
-                            color: SPEED_COLOR,
-                            kind: 'rate',
-                            format: speedUnit === 'cpm' ? formatCpm : formatSecPerCard,
-                        }}
-                        rightSeries={{
-                            key: 'cardReps',
-                            name: 'Flashcard reps',
-                            color: CARD_COLOR,
-                            kind: 'count',
-                        }}
-                        leftAsLine
-                        dualAxis
+                        series={[
+                            {
+                                key: speedUnit === 'cpm' ? 'speedCpm' : 'speedSecPerCard',
+                                name: speedUnit === 'cpm' ? 'Speed (cpm)' : 'Speed (s/card)',
+                                color: SPEED_COLOR,
+                                kind: 'rate',
+                                mark: 'line',
+                                format: speedUnit === 'cpm' ? formatCpm : formatSecPerCard,
+                                aggregate: (v) =>
+                                    speedUnit === 'cpm'
+                                        ? formatOrDash(
+                                              cpmOf(sumOf(v, 'cardReps'), sumOf(v, 'cardTimeMs')),
+                                              formatCpm
+                                          )
+                                        : formatOrDash(
+                                              secPerCardOf(
+                                                  sumOf(v, 'cardReps'),
+                                                  sumOf(v, 'cardTimeMs')
+                                              ),
+                                              formatSecPerCard
+                                          ),
+                            },
+                            {
+                                key: 'cardReps',
+                                name: 'Flashcard reps',
+                                color: CARD_COLOR,
+                                kind: 'count',
+                                axis: 'right',
+                                faint: true,
+                            },
+                        ]}
                         granularity={effectiveGranularity}
-                        leftAggregate={(v) =>
-                            speedUnit === 'cpm'
-                                ? formatOrDash(
-                                      cpmOf(sumOf(v, 'cardReps'), sumOf(v, 'cardTimeMs')),
-                                      formatCpm
-                                  )
-                                : formatOrDash(
-                                      secPerCardOf(sumOf(v, 'cardReps'), sumOf(v, 'cardTimeMs')),
-                                      formatSecPerCard
-                                  )
-                        }
                         zoom={zoom}
                         setZoom={setZoom}
                         headerExtra={
@@ -731,6 +811,30 @@ export function StudyTimelineCharts({
                                 {speedUnit === 'cpm' ? 'cpm' : 's/card'}
                             </button>
                         }
+                    />
+                    <TimelineChart
+                        title="Answer breakdown"
+                        subtitle="Each grade's share of the bucket's flashcard reps. Good has its own scale on the right — it usually dwarfs the other three."
+                        data={buckets}
+                        series={[
+                            ratingSeries('pctAgain', 'cardForgot', 'Forgot', AGAIN_COLOR, 'left'),
+                            ratingSeries('pctHard', 'cardHard', 'Hard', HARD_COLOR, 'left'),
+                            ratingSeries('pctEasy', 'cardEasy', 'Easy', EASY_COLOR, 'left'),
+                            ratingSeries('pctGood', 'cardGood', 'Good', GOOD_COLOR, 'right'),
+                        ]}
+                        granularity={effectiveGranularity}
+                        tooltipExtraRows={(b) => [
+                            {
+                                label: 'Reps',
+                                value: `${formatCount(b.cardReps)} (${formatCount(
+                                    b.cardForgot
+                                )}/${formatCount(b.cardHard)}/${formatCount(
+                                    b.cardGood
+                                )}/${formatCount(b.cardEasy)})`,
+                            },
+                        ]}
+                        zoom={zoom}
+                        setZoom={setZoom}
                     />
                 </>
             )}
