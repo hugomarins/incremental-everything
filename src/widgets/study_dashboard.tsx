@@ -2162,7 +2162,8 @@ function StudyDashboardPopup() {
 
     const containerStyle: React.CSSProperties = {
         width: '900px',
-        height: '850px',
+        // Keep in sync with the popup dimensions in register/widgets.ts.
+        height: '950px',
         backgroundColor: 'var(--rn-clr-background-primary)',
         borderRadius: 12,
         overflow: 'hidden',

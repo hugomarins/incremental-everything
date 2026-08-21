@@ -307,7 +307,7 @@ export async function registerWidgets(plugin: ReactRNPlugin) {
   plugin.app.registerWidget('study_dashboard', WidgetLocation.Popup, {
     dimensions: {
       width: '900px',
-      height: 850,
+      height: 950,
     },
   });
 

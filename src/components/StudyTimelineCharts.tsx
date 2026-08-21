@@ -221,7 +221,7 @@ function TimelineChart({
                 )}
             </div>
 
-            <ResponsiveContainer width="100%" height={260} debounce={50}>
+            <ResponsiveContainer width="100%" height={320} debounce={50}>
                 <ComposedChart
                     data={view}
                     margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
