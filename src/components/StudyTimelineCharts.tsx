@@ -237,6 +237,11 @@ function ChartTooltip({
     if (!active || !payload || payload.length === 0) return null;
     const bucket = payload[0]?.payload as TimelineBucket | undefined;
     if (!bucket) return null;
+    // Trend lines are a restatement of a series already listed here, so they get
+    // no row of their own. seriesByKey holds only the real series, which makes
+    // "is this a fit?" the same question as "is this series named?".
+    const rows = payload.filter((p: any) => seriesByKey[p.dataKey]);
+    if (rows.length === 0) return null;
     return (
         <div
             style={{
@@ -253,7 +258,7 @@ function ChartTooltip({
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
                 {granularity === 'week' ? `Week of ${bucket.label}` : bucket.label}
             </div>
-            {payload.map((p: any) => {
+            {rows.map((p: any) => {
                 const series = seriesByKey[p.dataKey];
                 return (
                     <div key={p.dataKey} style={{ color: p.color, fontWeight: 600 }}>
@@ -275,7 +280,7 @@ function ChartTooltip({
                     {row.label}: {row.value}
                 </div>
             ))}
-            {showTotal && payload.length > 1 && (
+            {showTotal && rows.length > 1 && (
                 <div
                     style={{
                         color: TOTAL_COLOR,
@@ -287,7 +292,7 @@ function ChartTooltip({
                 >
                     Total:{' '}
                     {fullFormatterFor(totalKind ?? 'count')(
-                        payload.reduce((sum: number, p: any) => sum + (p.value || 0), 0)
+                        rows.reduce((sum: number, p: any) => sum + (p.value || 0), 0)
                     )}
                 </div>
             )}
