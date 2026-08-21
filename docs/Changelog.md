@@ -2,6 +2,24 @@
 
 This page documents the major changes and improvements for each version of the Incremental RemNote plugin.
 
+## v1.0.53 - August 21st, 2026
+
+### ✨ New - an Incremental Rem no longer spoils its own flashcard
+
+When a Rem is both an Incremental Rem and a flashcard, the extract used to turn up before the card as often as after it — handing you the answer, so the recall was not a recall and the grade measured nothing.
+
+The Incremental Rem is now **held back while any flashcard on that same Rem is still due**. Grade the card and the extract returns to the running, normally a few items later in the same session. It is a change of order, not of content: a held item is released as soon as its card is graded, or when nothing unspoiled is left to show instead, or when no flashcards remain — so it is never postponed past the end of the session.
+
+Only cards on the Rem itself count; children are not checked. New, never-practiced cards do count, and disabled card directions do not. Normal queue only — *Practice All* and *In Order* are unaffected. Switch it off with **Hold Back Spoiler IncRems** under *Queue*.
+
+📖 [Spoiler Protection](Reviewing-Items-in-the-Queue.md#spoiler-protection)
+
+#### Technical explanation
+
+The check runs in the prefetch buffer, never in `GetNextCard` — that callback has a ~1s deadline after which RemNote silently discards its answer, so it stays free of awaits. The candidate's `rem.getCards()` read is issued concurrently with the IncRem verification that path already performs, so protection adds no wall time.
+
+Spoilers go to a second buffer rather than being filtered out, and are served when the build has walked the entire eligible list without finding an unspoiled candidate — "the buffer is empty" alone would be ambiguous, since an exhausted verification budget looks the same, and falling through on that would leave the protection doing nothing on a busy build. Due-ness uses `(nextRepetitionTime ?? Infinity) <= now`, matching the due counts in the priority shields so the two cannot disagree about what "due" means. Disabled directions are absent from `getCards()` entirely, and new cards carry a real `nextRepetitionTime`; both were measured rather than assumed, and the predicate fails open either way.
+
 ## v1.0.52 - August 21st, 2026
 
 ### ✨ New - the Study Dashboard has a Graphs tab

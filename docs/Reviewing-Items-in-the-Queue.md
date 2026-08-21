@@ -18,6 +18,42 @@ Each button is designed for a specific action to manage your learning flow effic
 
 ---
 
+## Spoiler Protection
+
+A single Rem is often **both** an Incremental Rem and a flashcard — you extract a paragraph, then cloze part of it in place. Both are due, and the queue used to show them in whatever order came up. When the extract came first, it handed you the answer: the recall was no longer a recall, and the grade you gave the card afterwards measured nothing.
+
+The plugin now **holds an Incremental Rem back while any flashcard on that same Rem is still due.** The card comes up first, you grade it honestly, and the extract returns to the running immediately afterwards — usually a few items later in the same session. Nothing is skipped; only the order changes.
+
+### When it releases
+
+The hold is always temporary. The Incremental Rem is shown as soon as any of these becomes true:
+
+* **You grade the card.** The card stops being due, the Rem stops being a spoiler, and it re-enters the running at its normal priority position.
+* **Nothing unspoiled is left.** If every remaining due Incremental Rem is holding for a card, the highest-priority one is shown anyway rather than showing you nothing.
+* **No flashcards remain.** With the flashcard queue empty, there is nothing left to spoil, so held items are released.
+
+So a held Incremental Rem is never lost, and never postponed past the end of the session.
+
+### What counts as a spoiler
+
+Only flashcards **on the Rem itself**. Cards on its children are not considered — an extract can certainly spoil those too, but checking every descendant of every candidate is a much heavier operation, so this first version stays with the direct case.
+
+Two behaviours are worth knowing:
+
+* **Brand-new, never-practiced cards do count.** This is the case that matters most: nothing has been recalled yet, so the extract would be teaching you the answer before your first look at the card.
+* **Disabled cards do not count.** If you switch a two-way card down to one direction in the queue, the direction you turned off stops holding anything back — even though it keeps its review history. The same is true for cards whose practice you have disabled entirely.
+
+### Limits
+
+* **Normal queue only.** *Practice All* and *In Order* are unaffected. In those modes every card in scope is going to be shown regardless of its due date, so every dual-type Rem would qualify as a spoiler at once and nothing would ever release them.
+* **New cards behind a daily limit.** If the card holding an extract back is a new one that your daily new-card limit has not reached yet, the extract stays held until the end of the session, then is released. It still gets reviewed — just later than its priority would normally place it.
+
+### Turning it off
+
+**Hold Back Spoiler IncRems** in the IE Settings popup, under *Queue*. On by default. Switching it off restores the previous behaviour, where a dual-type Rem's extract and card appear in whatever order the queue produces.
+
+---
+
 ## The Answer Buttons
 
 Here is a breakdown of each button and its function, from left to right.

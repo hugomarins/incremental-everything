@@ -10,7 +10,10 @@ The queue prioritizes items in the following way:
 **Key Takeaway**: 
 It does **not** care about "what is due the most" (i.e., how overdue an item is). If two items are both due right now, it will always show the one with the higher priority (lower number), regardless of which one has been overdue for longer  (strictly speaking, it will also apply the degree of randomness of your Sorting Criteria). Due date is purely a yes/no filter to let the item into the queue.
 
+One rule sits on top of this. If a due Incremental Rem is *also* a flashcard whose card is due, it is held back until you have graded that card — otherwise the extract would give the answer away before the recall was tested. See [Spoiler Protection](Reviewing-Items-in-the-Queue.md#spoiler-protection).
+
 ---
 ### See also
 * [Does the plugin prioritize items that are due today over older items?](Does-the-plugin-prioritize-items-that-are-due-today-over-older-items%3F.md)
 * [IncRem-Scheduler#scheduling-and-the-queue](IncRem-Scheduler.md)
+* [Spoiler Protection](Reviewing-Items-in-the-Queue.md#spoiler-protection)

@@ -408,15 +408,29 @@ async function verifyCandidate(
     if (!incRem) return 'invalid';
     if (!checkSpoiler) return 'ok';
 
-    // `?? Infinity`, not `?? 0`. A null nextRepetitionTime means the card is not
-    // scheduled — which covers disabled cards, including the one direction of a
-    // two-way card that the user switched off in the queue. Treating null as due
-    // would let a single disabled direction hold its IncRem back in every
-    // session forever, silently, with no card ever appearing to release it.
+    // Two things had to be true for this gate to be safe, and both were measured
+    // on real rems (debug widget → "Probe Spoiler State") rather than assumed:
     //
-    // This is the same convention (and the same reasoning) as the due counts in
-    // lib/card_priority — divergence here would mean the queue and the shields
-    // disagreed about what "due" means.
+    // 1. A DISABLED direction cannot strand its IncRem. Turning a two-way card
+    //    down to forward-only removes the backward card from getCards()
+    //    ENTIRELY — a rem that reported 3 cards reported 2 afterwards, and the
+    //    dropped one kept its 7 reps and its 2029 due date. So the disabled card
+    //    is never seen by the predicate at all; it cannot hold the rem back in
+    //    session after session with no card ever appearing to release it. Note
+    //    this is a stronger guarantee than the "disabled cards have a null
+    //    nextRepetitionTime" convention documented in lib/card_priority — the
+    //    card is absent, not null — but the `?? Infinity` below keeps the two in
+    //    agreement either way, and divergence would mean the queue and the
+    //    shields disagreed about what "due" means.
+    //
+    // 2. A NEW card DOES trigger protection. Never-practiced cards carry a real
+    //    nextRepetitionTime (their creation instant), not null, so a fresh
+    //    flashcard on the same rem counts as due and its extract is held back —
+    //    which is the case that matters most, since nothing has been recalled
+    //    yet for the extract to spoil.
+    //
+    // `?? Infinity` therefore covers only genuinely unscheduled cards, and it
+    // fails OPEN: an unrecognised state shows the IncRem rather than hiding it.
     const now = Date.now();
     return cards.some((c) => (c.nextRepetitionTime ?? Infinity) <= now) ? 'spoiler' : 'ok';
   } catch (e) {
