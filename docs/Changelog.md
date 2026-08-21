@@ -2,6 +2,32 @@
 
 This page documents the major changes and improvements for each version of the Incremental RemNote plugin.
 
+## v1.0.52 - August 21st, 2026
+
+### ✨ New - the Study Dashboard has a Graphs tab
+
+The dashboard is now split into two tabs, **Summary & Hierarchy** and **Graphs**. The Context and Period box sits above them, so the scope you pick applies to both.
+
+![The Graphs tab: reviews per day on two scales, and time per day stacked](assets/study-dashboard-graphs.png){ width="800" }
+
+The **Reviews** chart puts flashcard reps on the left axis and IncRem reps on the right, because in a typical knowledge base the two differ by an order of magnitude and one scale would flatten the IncRem bars to nothing. The **Time** chart keeps a single scale, since the times *are* comparable.
+
+**Daily, Weekly, Monthly or Yearly** buckets the period along the x-axis. A year at daily granularity is 366 bars — readable when you want the detail, and one click from the weekly or monthly shape:
+
+![Zooming into a year of data, then switching it between daily, weekly and monthly buckets](assets/study-dashboard-graph-zooming-bucket-sizing.gif){ width="750" }
+
+On the Time chart, **Stacked** (on by default) makes the bar height the bucket's total. Unchecking it puts flashcards and IncRems side by side on the same baseline, which is easier to compare — at the cost of the per-bucket total. **Drag across either chart to zoom** into a range: both follow, and the totals underneath describe what you can see, not the whole period.
+
+![Toggling Stacked, then dragging to zoom both charts into a shorter range](assets/study-dashboard-graph-time-stacking-zooming.gif){ width="700" }
+
+Every axis fits itself to the values actually on screen, so the bars fill the plot instead of huddling at the bottom. The numbers come from the same histories the Summary counts, so the two tabs always agree.
+
+📖 [Graphs tab](Study-Dashboard.md#graphs-tab)
+
+#### Technical explanation
+
+The dashboard builds a sparse per-day series (`buildTimelineDays`) alongside the Summary, reusing its rep predicates and its response-time cap — the bars cannot drift from the table above them. Rolling those days up into weeks, months or years happens in the chart (`lib/study_timeline.ts`), so switching granularity costs no recompute over the knowledge base and no RPCs; the totals hold steady across all four bucket sizes because the roll-up only regroups. Gaps are filled with zero buckets so the x-axis reads as a timeline rather than a list of the days you happened to study, and the span runs first-activity → last-activity rather than edge-to-edge of the period, so an unfinished year does not squeeze the bars that carry data. Past 800 bars the granularity coarsens a step at a time and says so. Zoom state is shared by both charts, since they are two readings of one timeline.
+
 ## v1.0.51 - August 18th, 2026
 
 ### 🐛 Fixed - a cleared priority could be served a pre-migration number

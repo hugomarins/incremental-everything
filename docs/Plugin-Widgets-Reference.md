@@ -283,7 +283,9 @@ Tracks every practice session with a real-time live view and a full history tabl
 ### 4.2. Study Dashboard
 *(Popup — Command Palette: `Open Study Dashboard`, quick code `sdb`)*
 
-A filterable popup that summarizes your **Incremental, Dismissed, and Flashcard activity** across the whole knowledge base or scoped to a single document, with an expandable hierarchy view showing time, reps, retention, and speed at every level of the rem tree.
+A filterable popup that summarizes your **Incremental, Dismissed, and Flashcard activity** across the whole knowledge base or scoped to a single document, with an expandable hierarchy view showing time, reps, retention, and speed at every level of the rem tree, and a tab that plots the same period as timeline graphs.
+
+**Tabs:** *Summary & Hierarchy* and *Graphs*. The filters sit above the tabs, so the context and period apply to both.
 
 **Filters:**
 - **Context:** *Global* (whole KB) or *Document* (rem-rooted).
@@ -294,11 +296,15 @@ A filterable popup that summarizes your **Incremental, Dismissed, and Flashcard 
 
 **Hierarchy:** Lists every top-level rem with activity in the period, sorted by total time descending. Expandable into the full ancestor tree, with structural-only ancestor nodes (italic, no own data) keeping the tree connected when the *Comprehensive* scope pulls rems from outside the document. Each row shows Total Time, Cards (reps + time), Inc. Rems (reps + time, summing Incremental and Dismissed histories), Retention %, and Speed.
 
+**Graphs:** Two timeline charts over the selected period, bucketed *Daily / Weekly / Monthly / Yearly*. **Reviews** puts flashcard reps on the left axis and IncRem reps on the right (the counts differ by an order of magnitude); **Time** keeps one scale and stacks flashcard and IncRem time, so the bar height is the bucket total — uncheck *Stacked* to put them side by side instead. Drag across either chart to zoom both, with a *Reset Data Range* button; every axis fits itself to the visible maximum. Counts come from the same histories the Summary uses, so the tabs always agree.
+
 **Performance:** Bulk-fetches *Incremental*, *Dismissed*, and *cardPriority* `taggedRem()` sets plus a single `card.getAll()`. Because `cardPriority` typically covers every card-bearing rem, ancestor chain walks need almost no per-rem `findOne` calls. Loaded data is cached per session, so changing the **period** re-aggregates in memory only (instant) — only changing the **context** or **scope** triggers a reload. Global mode pre-builds every top-level rem's subtree at load time, so expanding any top-level row is also instant.
 
 📖 **Full documentation:** [Study Dashboard](Study-Dashboard.md)
 
 ![Study Dashboard](assets/study-dashboard.png){ width="900" }
+
+![Study Dashboard — Graphs tab](assets/study-dashboard-graphs.png){ width="800" }
 
 ---
 

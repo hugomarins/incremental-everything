@@ -38,7 +38,6 @@ export interface TimelineBucket {
     incReps: number;
     cardTimeMs: number;
     incTimeMs: number;
-    totalTimeMs: number;
 }
 
 /**
@@ -123,7 +122,6 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
             incReps: d?.incReps ?? 0,
             cardTimeMs: d?.cardTimeMs ?? 0,
             incTimeMs: d?.incTimeMs ?? 0,
-            totalTimeMs: (d?.cardTimeMs ?? 0) + (d?.incTimeMs ?? 0),
         });
         cur = nextBucketStart(cur, gran);
     }

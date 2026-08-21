@@ -3,11 +3,14 @@
  *
  * Two synchronized timeline charts over the dashboard's selected period:
  *   1. Reviews — flashcard reps (left axis) vs IncRem reps (right axis)
- *   2. Time    — flashcard time, IncRem time and total, on one shared scale
+ *   2. Time    — flashcard time vs IncRem time, stacked or side by side
  *
  * Flashcard *counts* dwarf IncRem counts in a typical KB, so the Reviews chart
  * gives each series its own y-axis; the times are comparable, so that chart
- * keeps a single scale. Every axis is fitted to the *visible* maximum (the
+ * keeps a single scale and can stack them — stacked, the bar height *is* the
+ * total, which beats drawing the total again as its own mark. Unstacking puts
+ * both series back on a shared baseline for comparing them, at the cost of that
+ * per-bucket total. Every axis is fitted to the *visible* maximum (the
  * "Optimize Zoom" behaviour of the Priority Shield graphs, applied
  * automatically) so the plot area is never wasted on empty headroom.
  *
@@ -22,7 +25,6 @@ import {
     CartesianGrid,
     ComposedChart,
     Legend,
-    Line,
     ReferenceArea,
     ResponsiveContainer,
     Tooltip,
@@ -77,11 +79,13 @@ function ChartTooltip({
     payload,
     kind,
     granularity,
+    showTotal,
 }: {
     active?: boolean;
     payload?: any[];
     kind: 'count' | 'time';
     granularity: TimelineGranularity;
+    showTotal: boolean;
 }) {
     if (!active || !payload || payload.length === 0) return null;
     const bucket = payload[0]?.payload as TimelineBucket | undefined;
@@ -108,6 +112,19 @@ function ChartTooltip({
                     {p.name}: {fmt(p.value || 0)}
                 </div>
             ))}
+            {showTotal && payload.length > 1 && (
+                <div
+                    style={{
+                        color: TOTAL_COLOR,
+                        fontWeight: 600,
+                        marginTop: 3,
+                        paddingTop: 3,
+                        borderTop: '1px solid var(--rn-clr-border-primary)',
+                    }}
+                >
+                    Total: {fmt(payload.reduce((sum: number, p: any) => sum + (p.value || 0), 0))}
+                </div>
+            )}
         </div>
     );
 }
@@ -119,11 +136,13 @@ function TimelineChart({
     kind,
     leftSeries,
     rightSeries,
-    totalSeries,
     dualAxis,
+    stacked,
+    showTotal,
     granularity,
     zoom,
     setZoom,
+    headerExtra,
 }: {
     title: string;
     subtitle: string;
@@ -131,12 +150,16 @@ function TimelineChart({
     kind: 'count' | 'time';
     leftSeries: SeriesDef;
     rightSeries: SeriesDef;
-    totalSeries?: SeriesDef;
     /** false = every series shares the left axis (comparable magnitudes). */
     dualAxis: boolean;
+    /** Single-axis only: stack the two series so the bar height is their total. */
+    stacked?: boolean;
+    /** Report the two series' sum in the tooltip and the totals line. */
+    showTotal?: boolean;
     granularity: TimelineGranularity;
     zoom: ZoomState;
     setZoom: React.Dispatch<React.SetStateAction<ZoomState>>;
+    headerExtra?: React.ReactNode;
 }) {
     const view = useMemo(() => {
         if (typeof zoom.startIndex === 'number' && typeof zoom.endIndex === 'number') {
@@ -145,16 +168,17 @@ function TimelineChart({
         return data;
     }, [data, zoom.startIndex, zoom.endIndex]);
 
-    // On a single axis every series has to fit under the same ceiling.
+    // On a single axis both series share one ceiling — the sum of the two when
+    // they are stacked, the taller of the two when they sit side by side.
+    const isStacked = !dualAxis && !!stacked;
     const leftMax = Math.max(
         0,
-        ...view.map((b) =>
-            Math.max(
-                b[leftSeries.key] as number,
-                totalSeries ? (b[totalSeries.key] as number) : 0,
-                dualAxis ? 0 : (b[rightSeries.key] as number)
-            )
-        )
+        ...view.map((b) => {
+            const left = b[leftSeries.key] as number;
+            const right = b[rightSeries.key] as number;
+            if (dualAxis) return left;
+            return isStacked ? left + right : Math.max(left, right);
+        })
     );
     const rightMax = Math.max(0, ...view.map((b) => b[rightSeries.key] as number));
     const leftAxis = fitAxis(leftMax, kind);
@@ -210,15 +234,23 @@ function TimelineChart({
                     </div>
                     <div className="text-xs opacity-60">{subtitle}</div>
                 </div>
-                {zoom.startIndex !== null && (
-                    <button
-                        className="rn-button rn-button--secondary shadow-sm"
-                        style={{ margin: 0, fontSize: '11px', minHeight: '22px', padding: '0 8px' }}
-                        onClick={() => setZoom(EMPTY_ZOOM)}
-                    >
-                        Reset Data Range
-                    </button>
-                )}
+                <div className="flex items-center gap-3 shrink-0">
+                    {headerExtra}
+                    {zoom.startIndex !== null && (
+                        <button
+                            className="rn-button rn-button--secondary shadow-sm"
+                            style={{
+                                margin: 0,
+                                fontSize: '11px',
+                                minHeight: '22px',
+                                padding: '0 8px',
+                            }}
+                            onClick={() => setZoom(EMPTY_ZOOM)}
+                        >
+                            Reset Data Range
+                        </button>
+                    )}
+                </div>
             </div>
 
             <ResponsiveContainer width="100%" height={320} debounce={50}>
@@ -280,38 +312,36 @@ function TimelineChart({
                         />
                     )}
                     <Tooltip
-                        content={<ChartTooltip kind={kind} granularity={granularity} />}
+                        content={
+                            <ChartTooltip
+                                kind={kind}
+                                granularity={granularity}
+                                showTotal={!!showTotal}
+                            />
+                        }
                         cursor={{ fill: 'rgba(128,128,128,0.12)' }}
                     />
                     <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
                     <Bar
                         yAxisId="left"
+                        stackId={isStacked ? 'stack' : undefined}
                         dataKey={leftSeries.key as string}
                         name={leftSeries.name}
                         fill={leftSeries.color}
-                        radius={[2, 2, 0, 0]}
+                        // Only the top of a stack gets rounded corners, or the
+                        // segments read as separate bars sitting on each other.
+                        radius={isStacked ? undefined : [2, 2, 0, 0]}
                         isAnimationActive={false}
                     />
                     <Bar
                         yAxisId={rightAxisId}
+                        stackId={isStacked ? 'stack' : undefined}
                         dataKey={rightSeries.key as string}
                         name={rightSeries.name}
                         fill={rightSeries.color}
                         radius={[2, 2, 0, 0]}
                         isAnimationActive={false}
                     />
-                    {totalSeries && (
-                        <Line
-                            yAxisId="left"
-                            type="monotone"
-                            dataKey={totalSeries.key as string}
-                            name={totalSeries.name}
-                            stroke={totalSeries.color}
-                            strokeWidth={2}
-                            dot={false}
-                            isAnimationActive={false}
-                        />
-                    )}
                     {zoom.refAreaLeft && zoom.refAreaRight ? (
                         <ReferenceArea
                             yAxisId="left"
@@ -333,11 +363,9 @@ function TimelineChart({
                     <span style={{ color: rightSeries.color, fontWeight: 600 }}>{rightSeries.name}:</span>{' '}
                     {fmt(rightTotal)}
                 </span>
-                {totalSeries && (
+                {showTotal && (
                     <span>
-                        <span style={{ color: totalSeries.color, fontWeight: 600 }}>
-                            {totalSeries.name}:
-                        </span>{' '}
+                        <span style={{ color: TOTAL_COLOR, fontWeight: 600 }}>Total:</span>{' '}
                         {fmt(leftTotal + rightTotal)}
                     </span>
                 )}
@@ -357,11 +385,15 @@ export function StudyTimelineCharts({
     days,
     granularity,
     onGranularityChange,
+    stacked,
+    onStackedChange,
     accentColor,
 }: {
     days: TimelineDay[];
     granularity: TimelineGranularity;
     onGranularityChange: (g: TimelineGranularity) => void;
+    stacked: boolean;
+    onStackedChange: (stacked: boolean) => void;
     accentColor: string;
 }) {
     // Zoom is shared: the two charts are two readings of one timeline, so a
@@ -448,16 +480,36 @@ export function StudyTimelineCharts({
                     />
                     <TimelineChart
                         title="Time"
-                        subtitle="Flashcard time, IncRem time and their total per bucket, on one shared scale."
+                        subtitle={
+                            stacked
+                                ? 'Flashcard and IncRem time per bucket — the bar height is the total.'
+                                : 'Flashcard and IncRem time per bucket, side by side on one shared scale.'
+                        }
                         data={buckets}
                         kind="time"
                         leftSeries={{ key: 'cardTimeMs', name: 'Flashcards', color: CARD_COLOR }}
                         rightSeries={{ key: 'incTimeMs', name: 'IncRems', color: INC_COLOR }}
-                        totalSeries={{ key: 'totalTimeMs', name: 'Total', color: TOTAL_COLOR }}
                         dualAxis={false}
+                        stacked={stacked}
+                        showTotal
                         granularity={effectiveGranularity}
                         zoom={zoom}
                         setZoom={setZoom}
+                        headerExtra={
+                            <label
+                                className="flex items-center gap-1.5 cursor-pointer text-xs whitespace-nowrap"
+                                title="Stacked, the bar height is the total time. Unstacked, both series sit on the same baseline so their evolution is easier to compare — at the cost of the per-bucket total."
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={stacked}
+                                    onChange={(e) => onStackedChange(e.target.checked)}
+                                    className="form-checkbox h-3.5 w-3.5"
+                                    style={{ accentColor }}
+                                />
+                                <span className="opacity-80">Stacked</span>
+                            </label>
+                        }
                     />
                 </>
             )}

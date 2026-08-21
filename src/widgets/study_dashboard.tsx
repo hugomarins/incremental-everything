@@ -1943,6 +1943,8 @@ function StudyDashboardPopup() {
     const [contextMode, setContextMode] = useState<ContextMode>('global');
     const [tab, setTab] = useState<DashboardTab>('overview');
     const [granularity, setGranularity] = useState<TimelineGranularity>('day');
+    // Stacked by default: the bar height then *is* the bucket's total time.
+    const [stackedTime, setStackedTime] = useState(true);
     const [scope, setScope] = useState<ScopeMode>('comprehensive');
     const [period, setPeriod] = useState<Period>('thisYear');
     const [customStart, setCustomStart] = useState('');
@@ -1995,6 +1997,7 @@ function StudyDashboardPopup() {
                 ignorePreReset?: boolean;
                 tab?: DashboardTab;
                 granularity?: TimelineGranularity;
+                stackedTime?: boolean;
             } | null>(studyDashboardLastPeriodKey)
             .then((saved) => {
                 if (cancelled) return;
@@ -2011,6 +2014,7 @@ function StudyDashboardPopup() {
                 ) {
                     setGranularity(saved.granularity);
                 }
+                if (typeof saved?.stackedTime === 'boolean') setStackedTime(saved.stackedTime);
             })
             .catch(() => {})
             .finally(() => {
@@ -2031,9 +2035,10 @@ function StudyDashboardPopup() {
                 ignorePreReset,
                 tab,
                 granularity,
+                stackedTime,
             })
             .catch(() => {});
-    }, [plugin, period, customStart, customEnd, ignorePreReset, tab, granularity]);
+    }, [plugin, period, customStart, customEnd, ignorePreReset, tab, granularity, stackedTime]);
 
     const cardCapMs = useRunAsync(async () => {
         return (await getIESetting(plugin, flashcardResponseTimeLimitId)) * 1000;
@@ -2542,6 +2547,8 @@ function StudyDashboardPopup() {
                                 days={timelineDays}
                                 granularity={granularity}
                                 onGranularityChange={setGranularity}
+                                stacked={stackedTime}
+                                onStackedChange={setStackedTime}
                                 accentColor={ACCENT_COLOR}
                             />
                         )}
