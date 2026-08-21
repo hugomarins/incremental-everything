@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
     BuiltInPowerupCodes,
     Card,
     PluginRem,
     QueueInteractionScore,
     renderWidget,
+    useLocalStorageState,
     usePlugin,
     useRunAsync,
     WidgetLocation,
@@ -1447,6 +1448,69 @@ function retentionColor(rate: number): string {
     return '#ca8a04';
 }
 
+/**
+ * Unit the Speed columns render in, shared with the Practiced Queues summary
+ * table and the Graphs tab's Speed chart through one device-local key — one
+ * speed unit for the whole plugin. Carried by context rather than threaded as a
+ * prop so a hierarchy row deep in the tree doesn't have to be handed it, and so
+ * hundreds of rows don't each subscribe to storage.
+ */
+type SpeedUnit = 'cpm' | 'spc';
+const SPEED_UNIT_KEY = 'summarySpeedUnit';
+const SpeedUnitContext = React.createContext<{
+    unit: SpeedUnit;
+    toggle: () => void;
+}>({ unit: 'cpm', toggle: () => {} });
+
+/**
+ * A speed, in whichever unit is in force. Always *coloured* by cards-per-minute,
+ * because the scale runs slow-to-fast: in seconds-per-card the good end is the
+ * low one, and colouring off the displayed number would invert the meaning.
+ */
+function SpeedCell({ cardReps, cardTimeMs }: { cardReps: number; cardTimeMs: number }) {
+    const { unit } = useContext(SpeedUnitContext);
+    if (cardReps <= 0 || cardTimeMs <= 0) {
+        return <span style={{ color: 'var(--rn-clr-content-tertiary)' }}>-</span>;
+    }
+    const cpm = cardReps / (cardTimeMs / 60000);
+    return (
+        <span style={{ color: speedColor(cpm), fontWeight: 600 }}>
+            {unit === 'cpm' ? cpm.toFixed(1) : `${(cardTimeMs / 1000 / cardReps).toFixed(1)}s`}
+        </span>
+    );
+}
+
+/** The Speed column heading, which doubles as the unit switch. */
+function SpeedHeader() {
+    const { unit, toggle } = useContext(SpeedUnitContext);
+    return (
+        <div style={{ textAlign: 'right' }}>
+            <button
+                onClick={toggle}
+                title={
+                    unit === 'cpm'
+                        ? 'Showing cards per minute — click for seconds per card'
+                        : 'Showing seconds per card — click for cards per minute'
+                }
+                style={{
+                    font: 'inherit',
+                    color: 'inherit',
+                    letterSpacing: 'inherit',
+                    textTransform: 'inherit',
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    textDecoration: 'underline dotted',
+                    textUnderlineOffset: 2,
+                }}
+            >
+                Speed ({unit === 'cpm' ? 'cpm' : 's/card'})
+            </button>
+        </div>
+    );
+}
+
 function speedColor(cpm: number): string {
     if (cpm <= 0) return 'var(--rn-clr-content-tertiary)';
     let hue: number;
@@ -1462,8 +1526,6 @@ function SummaryCard({ summary }: { summary: SummaryStats }) {
     const dismPct =
         totalIncDism > 0 ? Math.round((summary.dismTaggedCount / totalIncDism) * 100) : 0;
 
-    const cpm =
-        summary.cardTimeMs > 0 ? summary.cardReps / (summary.cardTimeMs / 60000) : 0;
     const remembered = Math.max(0, summary.cardReps - summary.cardForgot);
     const retention = summary.cardReps > 0 ? (remembered / summary.cardReps) * 100 : 0;
 
@@ -1501,7 +1563,7 @@ function SummaryCard({ summary }: { summary: SummaryStats }) {
                 <div style={{ textAlign: 'right' }}>Reps</div>
                 <div style={{ textAlign: 'right' }}>Time</div>
                 <div style={{ textAlign: 'right' }}>Ret.</div>
-                <div style={{ textAlign: 'right' }}>Speed</div>
+                <SpeedHeader />
             </div>
             <div style={rowStyle}>
                 <div style={{ color: '#22c55e', fontWeight: 500 }}>
@@ -1547,14 +1609,7 @@ function SummaryCard({ summary }: { summary: SummaryStats }) {
                     )}
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                    {summary.cardReps > 0 ? (
-                        <span style={{ color: speedColor(cpm), fontWeight: 600 }}>
-                            {cpm.toFixed(1)}
-                            <span style={{ fontSize: 10, marginLeft: 2, color: 'var(--rn-clr-content-tertiary)' }}>cpm</span>
-                        </span>
-                    ) : (
-                        <span style={{ color: 'var(--rn-clr-content-tertiary)' }}>-</span>
-                    )}
+                    <SpeedCell cardReps={summary.cardReps} cardTimeMs={summary.cardTimeMs} />
                 </div>
             </div>
             {(() => {
@@ -1611,7 +1666,7 @@ const HierarchyHeader = () => (
         <div style={{ textAlign: 'right' }}>Cards</div>
         <div style={{ textAlign: 'right' }}>Inc. Rems</div>
         <div style={{ textAlign: 'right' }}>Ret.</div>
-        <div style={{ textAlign: 'right' }}>Speed</div>
+        <SpeedHeader />
         <div />
     </div>
 );
@@ -1637,7 +1692,6 @@ function HierarchyRow({
 
     const a = node.aggr;
     const totalTimeMs = a.cardTimeMs + a.incRemTimeSec * 1000;
-    const cpm = a.cardTimeMs > 0 ? a.cardReps / (a.cardTimeMs / 60000) : 0;
     const remembered = Math.max(0, a.cardReps - a.cardForgot);
     const retention = a.cardReps > 0 ? (remembered / a.cardReps) * 100 : 0;
     const isStructural = !node.selfData;
@@ -1769,13 +1823,7 @@ function HierarchyRow({
                 )}
             </div>
             <div style={{ textAlign: 'right' }}>
-                {a.cardReps > 0 ? (
-                    <span style={{ color: speedColor(cpm), fontWeight: 600 }}>
-                        {cpm.toFixed(1)}
-                    </span>
-                ) : (
-                    '-'
-                )}
+                <SpeedCell cardReps={a.cardReps} cardTimeMs={a.cardTimeMs} />
             </div>
             <button
                 onClick={async (e) => {
@@ -1964,6 +2012,21 @@ function StudyDashboardPopup() {
     // Trend lines start off: they are an overlay on the rate charts, and the
     // data should be what you see first.
     const [showTrends, setShowTrends] = useState(false);
+
+    // Shared with the Practiced Queues summary table and the Speed chart.
+    const [storedSpeedUnit, setSpeedUnit] = useLocalStorageState<SpeedUnit>(
+        SPEED_UNIT_KEY,
+        'cpm'
+    );
+    // Guard a stale or garbled stored value so the column never renders blank.
+    const speedUnit: SpeedUnit = storedSpeedUnit === 'spc' ? 'spc' : 'cpm';
+    const speedUnitCtx = useMemo(
+        () => ({
+            unit: speedUnit,
+            toggle: () => setSpeedUnit(speedUnit === 'cpm' ? 'spc' : 'cpm'),
+        }),
+        [speedUnit, setSpeedUnit]
+    );
     const [scope, setScope] = useState<ScopeMode>('comprehensive');
     const [period, setPeriod] = useState<Period>('thisYear');
     const [customStart, setCustomStart] = useState('');
@@ -2209,6 +2272,7 @@ function StudyDashboardPopup() {
     };
 
     return (
+        <SpeedUnitContext.Provider value={speedUnitCtx}>
         <div style={containerStyle} className="statisticsBody">
             {/* Header */}
             <div
@@ -2590,6 +2654,7 @@ function StudyDashboardPopup() {
                 )}
             </div>
         </div>
+        </SpeedUnitContext.Provider>
     );
 }
 
