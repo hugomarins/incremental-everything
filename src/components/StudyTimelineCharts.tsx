@@ -262,6 +262,7 @@ function TimelineChart({
     stacked,
     showTotal,
     granularity,
+    axisLabels,
     tooltipExtraRows,
     zoom,
     setZoom,
@@ -281,6 +282,11 @@ function TimelineChart({
     /** Report the bar series' sum in the tooltip and the totals line. */
     showTotal?: boolean;
     granularity: TimelineGranularity;
+    /**
+     * Overrides the y-axis captions, which otherwise list the series measured
+     * against each axis. Only rendered when the chart has two axes to tell apart.
+     */
+    axisLabels?: { left?: string; right?: string };
     tooltipExtraRows?: (bucket: TimelineBucket) => { label: string; value: string }[];
     zoom: ZoomState;
     setZoom: React.Dispatch<React.SetStateAction<ZoomState>>;
@@ -385,6 +391,10 @@ function TimelineChart({
         const axis = side === 'left' ? leftAxis : rightAxis;
         if (!axis) return null;
         const own = bySide[side][0];
+        // Only a chart with two axes has to say which is which. One axis needs
+        // no label — the legend already names everything on it.
+        const labelled = !!leftAxis && !!rightAxis;
+        const label = axisLabels?.[side] ?? bySide[side].map((x) => x.name).join(' / ');
         return (
             <YAxis
                 yAxisId={side}
@@ -396,8 +406,23 @@ function TimelineChart({
                     own.format ? own.format(v) : tickFormatterFor(axis.kind)(v)
                 }
                 tick={{ fontSize: 10 }}
-                width={48}
+                // The rotated label needs its own room, or it sits on the ticks.
+                width={labelled ? 66 : 48}
                 allowDataOverflow
+                label={
+                    labelled
+                        ? {
+                              value: label,
+                              angle: side === 'left' ? -90 : 90,
+                              position: side === 'left' ? 'insideLeft' : 'insideRight',
+                              style: {
+                                  fontSize: 10,
+                                  fill: axisColor(side),
+                                  textAnchor: 'middle',
+                              },
+                          }
+                        : undefined
+                }
             />
         );
     };
@@ -816,11 +841,15 @@ export function StudyTimelineCharts({
                         title="Answer breakdown"
                         subtitle="Each grade's share of the bucket's flashcard reps. Good has its own scale on the right — it usually dwarfs the other three."
                         data={buckets}
+                        // Listed worst to best, the order the queue's own buttons
+                        // use — the legend, tooltip and totals line all follow it.
+                        // Which axis a grade is measured against is independent of
+                        // where it sits here.
                         series={[
                             ratingSeries('pctAgain', 'cardForgot', 'Forgot', AGAIN_COLOR, 'left'),
                             ratingSeries('pctHard', 'cardHard', 'Hard', HARD_COLOR, 'left'),
-                            ratingSeries('pctEasy', 'cardEasy', 'Easy', EASY_COLOR, 'left'),
                             ratingSeries('pctGood', 'cardGood', 'Good', GOOD_COLOR, 'right'),
+                            ratingSeries('pctEasy', 'cardEasy', 'Easy', EASY_COLOR, 'left'),
                         ]}
                         granularity={effectiveGranularity}
                         tooltipExtraRows={(b) => [
