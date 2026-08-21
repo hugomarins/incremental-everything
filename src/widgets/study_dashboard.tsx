@@ -24,6 +24,12 @@ import { formatDuration, tryParseJson } from '../lib/utils';
 import { Period, resolvePeriod, parseDateInput, formatDateForDisplay } from '../lib/period';
 import { resolveRemTextSegments } from '../lib/richTextRemRefs';
 import { RemText, RemTextSegments } from '../components';
+import {
+    StudyTimelineCharts,
+    TIMELINE_GRANULARITIES,
+    TimelineDay,
+    TimelineGranularity,
+} from '../components/StudyTimelineCharts';
 import '../style.css';
 import '../App.css';
 import { getIESetting } from '../lib/settings';
@@ -63,6 +69,7 @@ function getButtonStyle(isSelected: boolean): React.CSSProperties {
 // ---------------------------------------------------------------------------
 
 type ContextMode = 'global' | 'document';
+type DashboardTab = 'overview' | 'graphs';
 type ScopeMode = 'descendants' | 'comprehensive';
 
 interface CardData {
@@ -285,6 +292,60 @@ function statsFromRem(
         if (cardHasReps) s.cardsWithRepsCount += 1;
     }
     return { self: s, hasIncReps, hasDismReps };
+}
+
+/**
+ * Per-day activity for the Graphs tab. Built from the same histories, the same
+ * rep predicates, and the same response-time cap the Summary uses, so the bars
+ * and the Summary can never disagree. Sparse — only days that actually saw a
+ * rep get an entry; the chart fills the gaps when it rolls days up into weeks,
+ * months or years.
+ */
+function buildTimelineDays(
+    rems: Iterable<RemData>,
+    startMs: number,
+    endMs: number,
+    cardCapMs: number,
+    ignorePreReset: boolean
+): TimelineDay[] {
+    const byDay = new Map<number, TimelineDay>();
+    const dayBucket = (dateMs: number): TimelineDay => {
+        const d = new Date(dateMs);
+        d.setHours(0, 0, 0, 0);
+        const key = d.getTime();
+        let bucket = byDay.get(key);
+        if (!bucket) {
+            bucket = { startMs: key, cardReps: 0, incReps: 0, cardTimeMs: 0, incTimeMs: 0 };
+            byDay.set(key, bucket);
+        }
+        return bucket;
+    };
+
+    for (const rd of rems) {
+        // Dismissed reps count as IncRem reps here, matching statsFromRem.
+        for (const history of [rd.incHistory, rd.dismHistory]) {
+            for (const rep of history) {
+                if (!rep || typeof rep.date !== 'number') continue;
+                if (rep.date < startMs || rep.date >= endMs) continue;
+                if (!isRealIncRep(rep.eventType)) continue;
+                const b = dayBucket(rep.date);
+                b.incReps += 1;
+                b.incTimeMs += (rep.reviewTimeSeconds || 0) * 1000;
+            }
+        }
+        for (const card of rd.cards) {
+            for (const rep of effectiveCardHistory(card.history, ignorePreReset)) {
+                if (!rep || typeof rep.date !== 'number') continue;
+                if (rep.date < startMs || rep.date >= endMs) continue;
+                if (!isRealCardScore(rep.score)) continue;
+                const b = dayBucket(rep.date);
+                b.cardReps += 1;
+                b.cardTimeMs += Math.min(Math.max(0, rep.responseTime || 0), cardCapMs);
+            }
+        }
+    }
+
+    return Array.from(byDay.values()).sort((a, b) => a.startMs - b.startMs);
 }
 
 // Fast tag/history fetch (avoids the heavier getIncrementalRemFromRem)
@@ -1880,6 +1941,8 @@ function StudyDashboardPopup() {
     // skew retention, time, and CPM.
     const [ignorePreReset, setIgnorePreReset] = useState<boolean>(false);
     const [contextMode, setContextMode] = useState<ContextMode>('global');
+    const [tab, setTab] = useState<DashboardTab>('overview');
+    const [granularity, setGranularity] = useState<TimelineGranularity>('day');
     const [scope, setScope] = useState<ScopeMode>('comprehensive');
     const [period, setPeriod] = useState<Period>('thisYear');
     const [customStart, setCustomStart] = useState('');
@@ -1930,6 +1993,8 @@ function StudyDashboardPopup() {
                 customStart?: string;
                 customEnd?: string;
                 ignorePreReset?: boolean;
+                tab?: DashboardTab;
+                granularity?: TimelineGranularity;
             } | null>(studyDashboardLastPeriodKey)
             .then((saved) => {
                 if (cancelled) return;
@@ -1938,6 +2003,13 @@ function StudyDashboardPopup() {
                 if (saved?.customEnd !== undefined) setCustomEnd(saved.customEnd);
                 if (typeof saved?.ignorePreReset === 'boolean') {
                     setIgnorePreReset(saved.ignorePreReset);
+                }
+                if (saved?.tab === 'overview' || saved?.tab === 'graphs') setTab(saved.tab);
+                if (
+                    saved?.granularity &&
+                    TIMELINE_GRANULARITIES.some((g) => g.value === saved.granularity)
+                ) {
+                    setGranularity(saved.granularity);
                 }
             })
             .catch(() => {})
@@ -1957,9 +2029,11 @@ function StudyDashboardPopup() {
                 customStart,
                 customEnd,
                 ignorePreReset,
+                tab,
+                granularity,
             })
             .catch(() => {});
-    }, [plugin, period, customStart, customEnd, ignorePreReset]);
+    }, [plugin, period, customStart, customEnd, ignorePreReset, tab, granularity]);
 
     const cardCapMs = useRunAsync(async () => {
         return (await getIESetting(plugin, flashcardResponseTimeLimitId)) * 1000;
@@ -1976,6 +2050,7 @@ function StudyDashboardPopup() {
         new Map()
     );
     const [summary, setSummary] = useState<SummaryStats | null>(null);
+    const [timelineDays, setTimelineDays] = useState<TimelineDay[] | null>(null);
     const runIdRef = useRef(0);
     // Cached global-mode raw data — survives across period changes.
     // Invalidated only when the context switches into Global from scratch (per session).
@@ -1991,6 +2066,7 @@ function StudyDashboardPopup() {
         setDocTree(null);
         setGlobalTops(undefined);
         setSummary(null);
+        setTimelineDays(null);
 
         try {
             if (contextMode === 'document' && ctxRemId) {
@@ -2025,6 +2101,15 @@ function StudyDashboardPopup() {
                 if (runId !== runIdRef.current) return;
                 setDocTree(tree);
                 setSummary(s);
+                setTimelineDays(
+                    buildTimelineDays(
+                        docDataRef.current!.remDataList,
+                        startMs,
+                        endMs,
+                        cardCapMs,
+                        ignorePreReset
+                    )
+                );
             } else {
                 // Load raw data once and cache. Period changes only re-aggregate (in-memory).
                 if (!globalDataRef.current) {
@@ -2051,6 +2136,15 @@ function StudyDashboardPopup() {
                 setGlobalTops(r.topLevels);
                 setGlobalSubtreesByTop(r.subtreesByTop);
                 setSummary(r.summary);
+                setTimelineDays(
+                    buildTimelineDays(
+                        globalDataRef.current.remDataById.values(),
+                        startMs,
+                        endMs,
+                        cardCapMs,
+                        ignorePreReset
+                    )
+                );
             }
         } catch (err) {
             console.error('[study_dashboard] compute failed', err);
@@ -2308,7 +2402,32 @@ function StudyDashboardPopup() {
                     </div>
                 </div>
 
-                {/* Progress / Summary / Hierarchy */}
+                {/* Tab bar — sits below the Context/Period box because that
+                    selection is shared by every tab. */}
+                <div className="mb-4 flex items-center gap-1.5" role="tablist">
+                    {([
+                        { value: 'overview', label: 'Summary & Hierarchy' },
+                        { value: 'graphs', label: 'Graphs' },
+                    ] as { value: DashboardTab; label: string }[]).map((t) => (
+                        <button
+                            key={t.value}
+                            role="tab"
+                            aria-selected={tab === t.value}
+                            onClick={() => setTab(t.value)}
+                            className="rounded-lg"
+                            style={{
+                                ...getButtonStyle(tab === t.value),
+                                padding: '5px 14px',
+                                fontSize: 13,
+                                cursor: 'pointer',
+                            }}
+                        >
+                            {t.label}
+                        </button>
+                    ))}
+                </div>
+
+                {/* Progress / Summary / Hierarchy / Graphs */}
                 {progress.running && (
                     <div style={{ padding: '12px 16px' }}>
                         <div
@@ -2340,7 +2459,7 @@ function StudyDashboardPopup() {
                     </div>
                 )}
 
-                {summary && (
+                {tab === 'overview' && summary && (
                     <div style={{ padding: '12px 16px' }}>
                         <div
                             style={{
@@ -2358,6 +2477,7 @@ function StudyDashboardPopup() {
                 )}
 
                 {/* Hierarchy */}
+                {tab === 'overview' && (
                 <div style={{ padding: '0 16px 16px' }}>
                     <div
                         style={{
@@ -2399,6 +2519,33 @@ function StudyDashboardPopup() {
                         </div>
                     )}
                 </div>
+                )}
+
+                {/* Graphs — an alternative reading of the same period the
+                    Summary counts: reviews and time over the timeline. */}
+                {tab === 'graphs' && (
+                    <div style={{ padding: '0 16px 16px' }}>
+                        {progress.running || !timelineDays ? (
+                            <div
+                                style={{
+                                    padding: 24,
+                                    textAlign: 'center',
+                                    color: 'var(--rn-clr-content-tertiary)',
+                                    fontSize: 12,
+                                }}
+                            >
+                                {progress.running ? 'Loading…' : 'No data yet.'}
+                            </div>
+                        ) : (
+                            <StudyTimelineCharts
+                                days={timelineDays}
+                                granularity={granularity}
+                                onGranularityChange={setGranularity}
+                                accentColor={ACCENT_COLOR}
+                            />
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );
