@@ -397,7 +397,12 @@ export function registerCallbacks(plugin: ReactRNPlugin) {
         return finish(null, 'prefetch-not-ready');
       }
 
-      const candidate = takePrefetchedCandidate(prefetchInfo);
+      // `allowDeferred` when no flashcards remain: with nothing left for the
+      // IncRem to spoil this session, holding it back would only cost the user
+      // the review. See spoiler protection in lib/queue_prefetch.
+      const candidate = takePrefetchedCandidate(prefetchInfo, {
+        allowDeferred: queueInfo.numCardsRemaining === 0,
+      });
       if (!candidate) {
         // Nothing due and in scope, or every candidate failed verification.
         plugin.app.registerCSS(queueCounterId, '');

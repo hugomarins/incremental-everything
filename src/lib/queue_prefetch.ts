@@ -7,7 +7,9 @@ import {
   seenRemInSessionKey,
   noIncRemTimerKey,
   incRemDisabledDeviceKey,
+  deferSpoilerIncRemsId,
 } from './consts';
+import { getIESetting } from './settings';
 import { getIncrementalRemFromRem, IncrementalRem, SlimIncRem } from './incremental_rem';
 import {
   CardsPerRem,
@@ -109,6 +111,25 @@ type PrefetchState = {
   buildKey: string | null;
   /** Verified candidates, best-first. */
   buffer: SlimIncRem[];
+  /**
+   * Verified candidates held back by spoiler protection: the rem is a genuine
+   * IncRem, but it also owns a flashcard that RemNote would schedule right now,
+   * and showing the extract first would give the answer away.
+   *
+   * Deliberately a second buffer rather than a filter — see `cleanExhausted`.
+   */
+  deferredBuffer: SlimIncRem[];
+  /**
+   * True when the last build walked the entire eligible list and everything that
+   * survived verification was a spoiler.
+   *
+   * This is what makes the deferral safe. Without it, "buffer is empty" would be
+   * ambiguous — it is also what an exhausted MAX_VERIFY_ROUNDS looks like — and
+   * falling through to the deferred list on that would weaken the protection to
+   * nothing on a busy build. With it, a deferred IncRem is served only when
+   * there is genuinely no unspoiled one left to serve instead.
+   */
+  cleanExhausted: boolean;
   /** Due-and-in-scope count, for the queue counter CSS. */
   dueCount: number;
   cardsPerRem: CardsPerRem;
@@ -148,6 +169,8 @@ type PrefetchState = {
 const emptyState = (previous?: PrefetchState): PrefetchState => ({
   buildKey: null,
   buffer: [],
+  deferredBuffer: [],
+  cleanExhausted: false,
   dueCount: 0,
   cardsPerRem: previous?.cardsPerRem ?? DEFAULT_CARDS_PER_REM,
   timerEndsAt: previous?.timerEndsAt ?? null,
@@ -218,9 +241,25 @@ export function isPrefetchReadyFor(info: PrefetchQueueInfo): boolean {
  * The candidate becomes `pending` rather than `seen`: see confirmServed /
  * rollbackServed. Purely synchronous — no awaits anywhere on this path.
  */
-export function takePrefetchedCandidate(info: PrefetchQueueInfo): SlimIncRem | null {
+export function takePrefetchedCandidate(
+  info: PrefetchQueueInfo,
+  options?: { allowDeferred?: boolean }
+): SlimIncRem | null {
   if (!isPrefetchReadyFor(info)) return null;
-  const next = state.buffer.shift();
+  let next = state.buffer.shift();
+  if (!next && (state.cleanExhausted || options?.allowDeferred)) {
+    // Nothing unspoiled is left to show instead, so the protection has done all
+    // it usefully can: serving the held-back IncRem now beats withholding it for
+    // a card that this session is not going to reach anyway.
+    next = state.deferredBuffer.shift();
+    if (next && VERBOSE_QUEUE_INJECTION) {
+      console.log(
+        `🎭 Spoiler protection released ${next.remId} — ` +
+          (state.cleanExhausted ? 'no unspoiled candidate remains' : 'no flashcards remain') +
+          '.'
+      );
+    }
+  }
   if (!next) return null;
   state.pending = next;
   // Keep the queue counter honest between rebuilds; the next build recomputes it.
@@ -326,22 +365,63 @@ async function refreshGates(plugin: ReactRNPlugin) {
   }
 }
 
+type Verdict =
+  /** A genuine IncRem with nothing of its own due in the flashcard queue. */
+  | 'ok'
+  /** A genuine IncRem, but one of its own cards is due — hold it back. */
+  | 'spoiler'
+  /** No longer an IncRem (un-incrementalised, deleted), or the read threw. */
+  | 'invalid';
+
 /**
- * Confirms a candidate is still a genuine Incremental Rem.
+ * Decides whether a candidate is still a genuine Incremental Rem, and — when
+ * spoiler protection is on — whether showing it now would give away one of its
+ * own flashcards.
  *
  * This is the expensive part — roughly eleven serial SDK round-trips per
  * candidate (hasPowerup, two Daily-Doc resolutions of three calls each, the
  * history slot, and the priority slot plus its rich-text conversion), measured
  * at 114–231ms. It used to run inside GetNextCard, between the decision and the
  * return. Here it runs while the user is reading.
+ *
+ * The card read is issued CONCURRENTLY with the IncRem verification rather than
+ * after it, so spoiler protection costs no additional wall time — only one more
+ * in-flight request on a path that already has eleven.
+ *
+ * SCOPE: the rem's OWN cards only. An extract can equally well spoil cards on
+ * its descendants, but that needs getDescendants() per candidate, which is a
+ * different order of cost and wants a cache of its own. Deliberately left out of
+ * this first cut.
  */
-async function verifyCandidate(plugin: ReactRNPlugin, candidate: SlimIncRem): Promise<boolean> {
+async function verifyCandidate(
+  plugin: ReactRNPlugin,
+  candidate: SlimIncRem,
+  checkSpoiler: boolean
+): Promise<Verdict> {
   try {
     const rem = await plugin.rem.findOne(candidate.remId);
-    return !!(await getIncrementalRemFromRem(plugin, rem));
+    if (!rem) return 'invalid';
+    const [incRem, cards] = await Promise.all([
+      getIncrementalRemFromRem(plugin, rem),
+      checkSpoiler ? rem.getCards() : Promise.resolve([]),
+    ]);
+    if (!incRem) return 'invalid';
+    if (!checkSpoiler) return 'ok';
+
+    // `?? Infinity`, not `?? 0`. A null nextRepetitionTime means the card is not
+    // scheduled — which covers disabled cards, including the one direction of a
+    // two-way card that the user switched off in the queue. Treating null as due
+    // would let a single disabled direction hold its IncRem back in every
+    // session forever, silently, with no card ever appearing to release it.
+    //
+    // This is the same convention (and the same reasoning) as the due counts in
+    // lib/card_priority — divergence here would mean the queue and the shields
+    // disagreed about what "due" means.
+    const now = Date.now();
+    return cards.some((c) => (c.nextRepetitionTime ?? Infinity) <= now) ? 'spoiler' : 'ok';
   } catch (e) {
     console.error('[prefetch] verify failed for', candidate.remId, e);
-    return false;
+    return 'invalid';
   }
 }
 
@@ -371,13 +451,15 @@ export async function buildQueuePrefetch(
   try {
     await refreshGates(plugin);
 
-    const [slimRaw, scopeRaw, cardsPerRem, sortingRandomness, weightK] = await Promise.all([
-      plugin.storage.getSession<SlimIncRem[]>(allIncrementalRemSlimKey),
-      plugin.storage.getSession<RemId[] | null>(currentScopeRemIdsKey),
-      getCardsPerRem(plugin),
-      getSortingRandomness(plugin),
-      getWeightSelectionK(plugin),
-    ]);
+    const [slimRaw, scopeRaw, cardsPerRem, sortingRandomness, weightK, deferSpoilers] =
+      await Promise.all([
+        plugin.storage.getSession<SlimIncRem[]>(allIncrementalRemSlimKey),
+        plugin.storage.getSession<RemId[] | null>(currentScopeRemIdsKey),
+        getCardsPerRem(plugin),
+        getSortingRandomness(plugin),
+        getWeightSelectionK(plugin),
+        getIESetting(plugin, deferSpoilerIncRemsId),
+      ]);
 
     state.cardsPerRem = cardsPerRem;
 
@@ -425,18 +507,37 @@ export async function buildQueuePrefetch(
       applyPriorityWeightedLottery(filtered, sortingRandomness, weightK);
     }
 
+    // Spoiler protection applies to the normal queue only. In practice-all and
+    // in-order every card in scope is going to be shown regardless of its due
+    // date, so "has a due card" is true of every dual-type rem at once and the
+    // gate would demote all of them for the whole session — a filter with no
+    // release condition. Those modes also aren't where the measurement matters:
+    // the user is drilling, not being scored by the scheduler.
+    const checkSpoiler = deferSpoilers && info.mode === 'normal';
+
     // Verify from the front in windows, keeping order, until the buffer is full
     // or we run out of candidates. Parallel within a window because these are
     // independent reads and this is off the critical path anyway.
     const verified: SlimIncRem[] = [];
+    const deferred: SlimIncRem[] = [];
     let cursor = 0;
+    let cleanExhausted = false;
     for (let round = 0; round < MAX_VERIFY_ROUNDS && verified.length < BUFFER_TARGET; round++) {
       const window = filtered.slice(cursor, cursor + (BUFFER_TARGET - verified.length));
-      if (window.length === 0) break;
+      if (window.length === 0) {
+        // Walked the whole eligible list. Anything sitting in `deferred` is now
+        // the best there is; takePrefetchedCandidate is allowed to fall through
+        // to it.
+        cleanExhausted = true;
+        break;
+      }
       cursor += window.length;
-      const results = await Promise.all(window.map((c) => verifyCandidate(plugin, c)));
+      const results = await Promise.all(
+        window.map((c) => verifyCandidate(plugin, c, checkSpoiler))
+      );
       window.forEach((candidate, i) => {
-        if (results[i]) verified.push(candidate);
+        if (results[i] === 'ok') verified.push(candidate);
+        else if (results[i] === 'spoiler') deferred.push(candidate);
       });
     }
 
@@ -448,6 +549,10 @@ export async function buildQueuePrefetch(
     }
 
     state.buffer = verified;
+    state.deferredBuffer = deferred;
+    state.cleanExhausted = cleanExhausted;
+    // Deferred rems ARE still due — they are postponed within the session, not
+    // excluded from it — so they stay in the counter.
     state.dueCount = filtered.length;
     state.buildKey = makeBuildKey(info);
     state.ready = true;
@@ -455,7 +560,13 @@ export async function buildQueuePrefetch(
     if (VERBOSE_QUEUE_INJECTION) {
       console.log(
         `🧰 Prefetch built for [${state.buildKey}] in ${Date.now() - startedAt}ms: ` +
-          `${verified.length} verified of ${filtered.length} eligible (${allIncRems.length} cached).`
+          `${verified.length} verified of ${filtered.length} eligible (${allIncRems.length} cached)` +
+          (checkSpoiler
+            ? `, ${deferred.length} held back as spoilers` +
+              (deferred.length ? ` [${deferred.map((d) => d.remId).join(', ')}]` : '') +
+              (cleanExhausted ? ' (no unspoiled candidate left)' : '')
+            : '') +
+          '.'
       );
     }
   } catch (e) {

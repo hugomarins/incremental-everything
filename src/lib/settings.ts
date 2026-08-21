@@ -41,6 +41,7 @@ import {
   priorityEditorDisplayModeId,
   PriorityEditorDisplayMode,
   displayPriorityShieldId,
+  deferSpoilerIncRemsId,
   displayWeightedShieldId,
   displayQueueToolbarPriorityId,
   isolatedQueueModeId,
@@ -100,6 +101,7 @@ export interface IESettings {
   // Queue display
   [collapseQueueTopBar]: boolean;
   [displayPriorityShieldId]: boolean;
+  [deferSpoilerIncRemsId]: boolean;
   [displayWeightedShieldId]: boolean;
   [displayQueueToolbarPriorityId]: boolean;
   [isolatedQueueModeId]: IsolatedQueueMode;
@@ -163,6 +165,7 @@ export const IE_SETTINGS_DEFAULTS: IESettings = {
 
   [collapseQueueTopBar]: false,
   [displayPriorityShieldId]: true,
+  [deferSpoilerIncRemsId]: true,
   [displayWeightedShieldId]: true,
   [displayQueueToolbarPriorityId]: true,
   [isolatedQueueModeId]: 'highlights',
@@ -487,6 +490,17 @@ export const IE_SETTINGS_SCHEMA: Record<IESettingId, SettingSpec> = {
     description:
       'Shows a live status of your highest-priority due items — below the answer buttons for ' +
       'IncRems, and in the card priority widget under the flashcard for regular cards.',
+  },
+  [deferSpoilerIncRemsId]: {
+    kind: 'boolean',
+    group: 'queue',
+    title: 'Hold Back Spoiler IncRems',
+    description:
+      'When a Rem is both an Incremental Rem and a flashcard, holds the IncRem back while any ' +
+      'of its own cards is still due, so reading the extract cannot give away the answer ' +
+      'before you grade the card. The IncRem returns to the running once the card is graded, ' +
+      'and is released anyway once nothing else is due. Only applies to the normal queue — ' +
+      'Practice All and In Order are unaffected.',
   },
   [displayWeightedShieldId]: {
     kind: 'boolean',

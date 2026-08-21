@@ -268,6 +268,10 @@ export const currentScopeRemIdsKey = 'current-scope-rem-ids-key';
 export const seenRemInSessionKey = 'seen-rem-in-session-key';
 export const seenCardInSessionKey = 'seen-card-in-session-key';
 export const displayPriorityShieldId = 'display-priority-shield';
+// Spoiler protection: hold back an IncRem whose own rem still has a flashcard
+// due in this session, so the extract cannot give away the answer before the
+// card is graded. See lib/queue_prefetch.
+export const deferSpoilerIncRemsId = 'defer-spoiler-increms';
 export const displayQueueToolbarPriorityId = 'display-queue-toolbar-priority';
 export const autoFocusQueueDashboardId = 'auto-focus-queue-dashboard';
 // Timestamp flag set by the IncRem "Next" paths just before they advance the

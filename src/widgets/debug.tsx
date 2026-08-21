@@ -2195,6 +2195,44 @@ function Debug() {
     }
   };
 
+  // Spoiler-protection probe. The queue gate in lib/queue_prefetch decides that a
+  // dual-type rem is a "spoiler" when one of its OWN cards satisfies
+  // `(nextRepetitionTime ?? Infinity) <= now`. That predicate rests on a claim
+  // about the SDK — that an unscheduled card reports a null nextRepetitionTime —
+  // and getting it wrong in the other direction would hold an IncRem back in
+  // every session with no card ever appearing to release it. This prints the raw
+  // per-card state so the claim can be checked against real rems instead of
+  // assumed: disable one direction of a two-way card, or make a fresh
+  // never-practiced one, and read off what actually comes back.
+  const handleProbeSpoilerState = async () => {
+    if (!rem) return;
+    const now = Date.now();
+    const [cards, enablePractice, direction] = await Promise.all([
+      rem.getCards(),
+      rem.getEnablePractice(),
+      rem.getPracticeDirection(),
+    ]);
+    const rows = cards.map((c) => ({
+      cardId: c._id,
+      type: typeof c.type === 'string' ? c.type : `cloze:${c.type.clozeId}`,
+      nextRepetitionTime: c.nextRepetitionTime ?? null,
+      nextRepHuman: c.nextRepetitionTime ? new Date(c.nextRepetitionTime).toISOString() : '(null)',
+      lastRepHuman: c.lastRepetitionTime ? new Date(c.lastRepetitionTime).toISOString() : '(null)',
+      reps: c.repetitionHistory?.length ?? 0,
+      // Exactly the predicate the queue gate applies.
+      countsAsDue: (c.nextRepetitionTime ?? Infinity) <= now,
+    }));
+    console.log(
+      `🎭 Spoiler probe for ${rem._id}: enablePractice=${enablePractice}, direction=${direction}, ` +
+        `${cards.length} card(s), ${rows.filter((r) => r.countsAsDue).length} counted as due.`
+    );
+    console.table(rows);
+    await plugin.app.toast(
+      `${cards.length} card(s), ${rows.filter((r) => r.countsAsDue).length} due ` +
+        `(practice: ${enablePractice ? direction : 'off'}). See console.`
+    );
+  };
+
   const handleDumpStructure = async () => {
     if (!rem) return;
     await plugin.app.toast('Dumping slot/card structure to console...');
@@ -3956,6 +3994,21 @@ function Debug() {
                  title="Delete all CardPriority slots and let the plugin recreate them to fix duplicates"
                >
                  Scrub Duplicate Slots
+               </button>
+               <button
+                 onClick={handleProbeSpoilerState}
+                 style={{
+                   fontSize: '11px',
+                   padding: '2px 8px',
+                   backgroundColor: 'var(--rn-clr-background-secondary)',
+                   color: 'var(--rn-clr-content-primary)',
+                   border: '1px solid var(--rn-clr-border)',
+                   borderRadius: '4px',
+                   cursor: 'pointer'
+                 }}
+                 title="Print every card on this rem with its raw nextRepetitionTime and whether the queue's spoiler gate counts it as due"
+               >
+                 Probe Spoiler State
                </button>
                <button
                  onClick={handleDumpStructure}
