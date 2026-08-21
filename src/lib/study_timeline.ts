@@ -105,10 +105,31 @@ function bucketLabel(startMs: number, gran: TimelineGranularity, multiYear: bool
 export function rollUp(days: TimelineDay[], gran: TimelineGranularity): TimelineBucket[] {
     if (days.length === 0) return [];
 
-    const byStart = new Map<number, TimelineDay>();
+    // Buckets are keyed by their *calendar* identity ("2018-11-05"), never by a
+    // raw timestamp.
+    //
+    // Timestamps look like the obvious key and are a trap. In São Paulo, DST
+    // used to begin at midnight: on 4 Nov 2018 the clock jumped straight from
+    // 23:59:59 to 01:00, so local midnight did not exist that day and
+    // `setHours(0,0,0,0)` lands on 01:00 instead. Walking the timeline by adding
+    // a day at a time preserves that 01:00 forever after, while every bucket key
+    // computed from a rep's own date is back at 00:00 — so from the transition
+    // on, the walk misses every bucket, and the whole timeline after it renders
+    // as empty. A calendar key cannot drift: both sides ask what day it is, not
+    // what instant it is.
+    interface Acc {
+        startMs: number;
+        cardReps: number;
+        cardForgot: number;
+        incReps: number;
+        cardTimeMs: number;
+        incTimeMs: number;
+    }
+    const byKey = new Map<string, Acc>();
     for (const day of days) {
-        const s = bucketStart(day.startMs, gran);
-        const acc = byStart.get(s);
+        const start = bucketStart(day.startMs, gran);
+        const key = bucketKey(start, gran);
+        const acc = byKey.get(key);
         if (acc) {
             acc.cardReps += day.cardReps;
             acc.cardForgot += day.cardForgot;
@@ -116,24 +137,37 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
             acc.cardTimeMs += day.cardTimeMs;
             acc.incTimeMs += day.incTimeMs;
         } else {
-            byStart.set(s, { ...day, startMs: s });
+            byKey.set(key, {
+                startMs: start,
+                cardReps: day.cardReps,
+                cardForgot: day.cardForgot,
+                incReps: day.incReps,
+                cardTimeMs: day.cardTimeMs,
+                incTimeMs: day.incTimeMs,
+            });
         }
     }
 
-    const starts = Array.from(byStart.keys()).sort((a, b) => a - b);
-    const first = starts[0];
-    const last = starts[starts.length - 1];
-    const multiYear = new Date(first).getFullYear() !== new Date(last).getFullYear();
+    // Every key in one roll-up shares a format, so lexicographic order is
+    // chronological order.
+    const keys = Array.from(byKey.keys()).sort();
+    const firstKey = keys[0];
+    const lastKey = keys[keys.length - 1];
+    const multiYear =
+        new Date(byKey.get(firstKey)!.startMs).getFullYear() !==
+        new Date(byKey.get(lastKey)!.startMs).getFullYear();
 
     const buckets: TimelineBucket[] = [];
-    let cur = first;
+    let cur = byKey.get(firstKey)!.startMs;
+    let curKey = firstKey;
     // Hard stop: a corrupt timestamp must not spin the loop forever.
-    while (cur <= last && buckets.length < 20000) {
-        const d = byStart.get(cur);
+    while (curKey <= lastKey && buckets.length < 20000) {
+        const d = byKey.get(curKey);
+        const startMs = bucketStart(cur, gran);
         buckets.push({
-            key: bucketKey(cur, gran),
-            label: bucketLabel(cur, gran, multiYear),
-            startMs: cur,
+            key: curKey,
+            label: bucketLabel(startMs, gran, multiYear),
+            startMs,
             cardReps: d?.cardReps ?? 0,
             cardForgot: d?.cardForgot ?? 0,
             incReps: d?.incReps ?? 0,
@@ -144,6 +178,10 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
             speedSecPerCard: secPerCardOf(d?.cardReps ?? 0, d?.cardTimeMs ?? 0),
         });
         cur = nextBucketStart(cur, gran);
+        const nextKey = bucketKey(bucketStart(cur, gran), gran);
+        // A step that fails to advance the calendar would loop forever.
+        if (nextKey <= curKey) break;
+        curKey = nextKey;
     }
     return buckets;
 }
