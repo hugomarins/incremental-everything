@@ -10,23 +10,51 @@ The dashboard is now split into two tabs, **Summary & Hierarchy** and **Graphs**
 
 ![The Graphs tab: reviews per day on two scales, and time per day stacked](assets/study-dashboard-graphs.png){ width="800" }
 
-The **Reviews** chart puts flashcard reps on the left axis and IncRem reps on the right, because in a typical knowledge base the two differ by an order of magnitude and one scale would flatten the IncRem bars to nothing. The **Time** chart keeps a single scale, since the times *are* comparable.
+Five charts, all over the same timeline. **Reviews** and **Time** answer *how much*: flashcard reps against IncRem reps, and flashcard time against IncRem time. **Retention**, **Speed** and **Answer breakdown** answer *how well* — the Summary's own `Ret.` and `Speed` columns, plus the Forgot / Hard / Good / Easy split behind them, spread over time instead of collapsed into a single number.
+
+![Retention, Speed and Answer breakdown, with trend lines switched on](assets/study-dashboard-retention-speed-answerbreakdown.png){ width="820" }
 
 **Daily, Weekly, Monthly or Yearly** buckets the period along the x-axis. A year at daily granularity is 366 bars — readable when you want the detail, and one click from the weekly or monthly shape:
 
 ![Zooming into a year of data, then switching it between daily, weekly and monthly buckets](assets/study-dashboard-graph-zooming-bucket-sizing.gif){ width="750" }
 
-On the Time chart, **Stacked** (on by default) makes the bar height the bucket's total. Unchecking it puts flashcards and IncRems side by side on the same baseline, which is easier to compare — at the cost of the per-bucket total. **Drag across either chart to zoom** into a range: both follow, and the totals underneath describe what you can see, not the whole period.
+On the Time chart, **Stacked** (on by default) makes the bar height the bucket's total. Unchecking it puts flashcards and IncRems side by side on the same baseline, which is easier to compare — at the cost of the per-bucket total. **Drag across any chart to zoom** into a range: all five follow, and the totals underneath describe what you can see, not the whole period.
 
 ![Toggling Stacked, then dragging to zoom both charts into a shorter range](assets/study-dashboard-graph-time-stacking-zooming.gif){ width="700" }
 
-Every axis fits itself to the values actually on screen, so the bars fill the plot instead of huddling at the bottom. The numbers come from the same histories the Summary counts, so the two tabs always agree.
+A **Trend lines** checkbox fits a straight line through retention, speed and each grade, and prints its slope — `Retention: 92% (↑ 0.20 pts/wk)`. The fit is weighted by the reps behind each bucket, so a three-rep week cannot pull it like an eight-hundred-rep one, and weeks you did not study are left out rather than counted as failures.
+
+Every axis fits itself to the values actually on screen, so the bars and lines fill the plot instead of huddling at the bottom. The numbers come from the same histories the Summary counts, so the two tabs always agree.
 
 📖 [Graphs tab](Study-Dashboard.md#graphs-tab)
 
 #### Technical explanation
 
-The dashboard builds a sparse per-day series (`buildTimelineDays`) alongside the Summary, reusing its rep predicates and its response-time cap — the bars cannot drift from the table above them. Rolling those days up into weeks, months or years happens in the chart (`lib/study_timeline.ts`), so switching granularity costs no recompute over the knowledge base and no RPCs; the totals hold steady across all four bucket sizes because the roll-up only regroups. Gaps are filled with zero buckets so the x-axis reads as a timeline rather than a list of the days you happened to study, and the span runs first-activity → last-activity rather than edge-to-edge of the period, so an unfinished year does not squeeze the bars that carry data. Past 800 bars the granularity coarsens a step at a time and says so. Zoom state is shared by both charts, since they are two readings of one timeline.
+The dashboard builds a sparse per-day series (`buildTimelineDays`) alongside the Summary, reusing its rep predicates and its response-time cap — the charts cannot drift from the table above them. Rolling those days up into weeks, months or years happens in the chart (`lib/study_timeline.ts`), so switching granularity costs no recompute over the knowledge base and no RPCs; totals hold steady across all four bucket sizes because the roll-up only regroups. Buckets are keyed by calendar identity rather than by timestamp, gaps are filled with zero buckets so the x-axis reads as a timeline, and the span runs first-activity → last-activity rather than edge-to-edge of the period. Past 800 bars the granularity coarsens a step at a time and says so.
+
+Rates never average their buckets: retention, speed and each grade's share are recomputed from the summed reps inside whatever range is visible, and the trend fits are weighted least squares over the same counts. Percentage and rate axes are band-fitted around their own values rather than growing from zero, since a retention that lives between 88% and 95% drawn against 0–100% is a flat line. Zoom state is shared by all five charts, since they are five readings of one timeline.
+
+### ✨ New - one speed unit across the whole plugin
+
+The **Speed** columns in the Study Dashboard's Summary and Hierarchy tables now read in **cards per minute or seconds per card**, and the column heading is the switch — it says which unit is in force and toggles when clicked.
+
+It is the same preference the [Practiced Queues](History-Queue-Dashboard-and-Mastery-Drill.md#practiced-queues-history-live-dashboard) summary table already had, and the one the new Speed chart uses, so changing it anywhere changes it everywhere.
+
+📖 [Speed unit](Study-Dashboard.md#speed-unit)
+
+#### Technical explanation
+
+All three read the device-local `summarySpeedUnit` key rather than keeping their own copies. The dashboard carries it by React context, so a hierarchy row several components deep doesn't have to be handed it as a prop and hundreds of rows don't each open a storage subscription. Colour still comes from cards-per-minute whatever the display unit: the scale runs slow-to-fast, so colouring off a seconds-per-card figure would swap red for green.
+
+### 🐛 Fixed - changing a filter while the dashboard loaded restarted the load
+
+Switching period or context while the Study Dashboard was still loading threw away everything it had read and started again from zero. On a large knowledge base that could be a long wait repeated for every click — and a period change should never have cost a load at all, since the same data answers every period.
+
+📖 [Performance notes](Study-Dashboard.md#performance-notes)
+
+#### Technical explanation
+
+The stale-run guard ran *before* the result was cached, so a superseded run discarded a fully loaded knowledge base and the next run found an empty cache. The two runs also overlapped: the second started its own `loadGlobalData` while the first was still in flight, so the walks competed with each other. The result is now cached before the staleness check — the data belongs to the knowledge base, not to the run that asked for it — and loads go through a one-slot in-flight cache (`lib/shared_load.ts`), so a filter change joins the load already running. A failed load clears the slot rather than leaving every later caller to inherit a rejected promise. Progress reporting hands over to whichever run is on screen, so the bar keeps climbing instead of freezing at a superseded run's last value.
 
 ## v1.0.51 - August 18th, 2026
 

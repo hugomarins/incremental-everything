@@ -34,6 +34,7 @@ import {
 import '../style.css';
 import '../App.css';
 import { getIESetting } from '../lib/settings';
+import { SharedLoadSlot, emptySlot, sharedLoad } from '../lib/shared_load';
 
 // ---------------------------------------------------------------------------
 // Style helpers (mirroring the statistics plugin's chartHelpers)
@@ -2159,9 +2160,24 @@ function StudyDashboardPopup() {
     // (rootRemId, scope). Different rem or scope invalidates and reloads.
     const docDataRef = useRef<LoadedDocumentData | null>(null);
 
+    // In-flight loads, so a filter change *during* a load joins the one already
+    // running instead of starting a second one.
+    const globalLoadRef = useRef<SharedLoadSlot<LoadedGlobalData>>(emptySlot());
+    const docLoadRef = useRef<SharedLoadSlot<LoadedDocumentData>>(emptySlot());
+    // A shared load reports progress through these, so the run currently on
+    // screen can take over the bar from the run that started the load.
+    const globalProgressRef = useRef<(p: number, label: string) => void>(() => {});
+    const docProgressRef = useRef<(p: number, label: string) => void>(() => {});
+
     const run = useCallback(async () => {
         if (cardCapMs == null) return;
         const runId = ++runIdRef.current;
+        // Loading occupies the first 80% of the bar. Guarded so a superseded run
+        // stops painting, which is what lets a joined load hand the bar over.
+        const reportLoad = (p: number, label: string) => {
+            if (runId !== runIdRef.current) return;
+            setProgress({ running: true, percent: 0.8 * p, label });
+        };
         setProgress({ running: true, percent: 0, label: 'Starting…' });
         setDocTree(null);
         setGlobalTops(undefined);
@@ -2180,13 +2196,20 @@ function StudyDashboardPopup() {
                 // changes hit only the aggregate path.
                 const cached = docDataRef.current;
                 if (!cached || cached.rootRemId !== rootRem._id || cached.scope !== scope) {
-                    const loaded = await loadDocumentData(plugin, rootRem, scope, (p, label) => {
-                        if (runId !== runIdRef.current) return;
-                        setProgress({ running: true, percent: 0.8 * p, label });
-                    });
-                    if (runId !== runIdRef.current) return;
+                    docProgressRef.current = reportLoad;
+                    const loaded = await sharedLoad(
+                        docLoadRef.current,
+                        `${rootRem._id}::${scope}`,
+                        () =>
+                            loadDocumentData(plugin, rootRem, scope, (p, label) =>
+                                docProgressRef.current(p, label)
+                            )
+                    );
+                    // Cache before the staleness check: the data belongs to the
+                    // rem and scope, not to the run that happened to ask for it.
                     docDataRef.current = loaded;
                 }
+                if (runId !== runIdRef.current) return;
                 const { tree, summary: s } = aggregateDocumentData(
                     docDataRef.current!,
                     startMs,
@@ -2213,14 +2236,15 @@ function StudyDashboardPopup() {
             } else {
                 // Load raw data once and cache. Period changes only re-aggregate (in-memory).
                 if (!globalDataRef.current) {
-                    const loaded = await loadGlobalData(plugin, (p, label) => {
-                        if (runId !== runIdRef.current) return;
-                        // Loading occupies the first 80% of the progress bar.
-                        setProgress({ running: true, percent: 0.8 * p, label });
-                    });
-                    if (runId !== runIdRef.current) return;
+                    globalProgressRef.current = reportLoad;
+                    const loaded = await sharedLoad(globalLoadRef.current, 'global', () =>
+                        loadGlobalData(plugin, (p, label) => globalProgressRef.current(p, label))
+                    );
+                    // Cache before the staleness check: this data is the whole
+                    // knowledge base, not this run's answer.
                     globalDataRef.current = loaded;
                 }
+                if (runId !== runIdRef.current) return;
                 const r = aggregateGlobalData(
                     globalDataRef.current,
                     startMs,
