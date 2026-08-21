@@ -57,6 +57,10 @@ Twelve presets in a tidy 5×3 grid, plus an **All** button and explicit **Start 
 - Default on first open is **This Year**.
 - Every boundary is **your local midnight**, so a range of `27/07` → `27/07` covers exactly the day you lived through, matching what RemNote's own Flashcards → Stats heatmap reports for that date.
 
+Switching preset re-aggregates immediately — the heavy load already happened, so *Week* → *Month* → *Year* → *All* only re-counts data held in memory (see [Performance notes](#performance-notes)). The Summary and the whole [Hierarchy](#hierarchy-section) redraw together, and branches pruned for having no reps in a narrow period re-appear as you widen it:
+
+![Switching period presets, then expanding branches of the hierarchy](assets/study-dashboard-period-selection-hierarchy-expansion.gif){ width="750" }
+
 ---
 
 ## Summary section
@@ -92,6 +96,8 @@ The hierarchy lists every rem with activity *inside the selected period*, organi
 - The ↗ icon on each row opens the rem in the editor (PDF-aware: PDF highlights/extracts open as a page).
 - Branches with zero reps in the period are **pruned at every level**. If you change to *All*, more rems re-appear.
 - **Structural ancestor nodes** — rems that have no own data but are needed to keep the tree connected — render in italics with reduced opacity. Their numbers are the bottom-up aggregate of their descendants.
+
+The [period demo above](#period) shows both halves of this: the tree re-counting as the period widens, and branches expanding level by level.
 
 Each row's columns:
 
