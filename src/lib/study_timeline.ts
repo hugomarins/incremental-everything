@@ -415,6 +415,50 @@ export function fitRateAxis(
     });
 }
 
+/**
+ * Weighted least-squares fit through (x, y) points — the trend lines.
+ *
+ * Weighted, because everything else on these charts is reps-weighted and a
+ * trend that contradicted the aggregate beneath it would be worse than none: a
+ * bucket holding three reps at 0% retention must not pull the line as hard as
+ * one holding eight hundred. Weight is the rep count behind each point.
+ *
+ * Returns null when there is nothing to fit — no weight at all, or every point
+ * stacked on one x, where the slope is undefined rather than zero.
+ */
+export function weightedLinearFit(
+    points: { x: number; y: number; w: number }[]
+): { slope: number; intercept: number } | null {
+    let sw = 0;
+    let sx = 0;
+    let sy = 0;
+    let sxx = 0;
+    let sxy = 0;
+    let used = 0;
+    for (const p of points) {
+        if (!(p.w > 0) || !isFinite(p.y)) continue;
+        sw += p.w;
+        sx += p.w * p.x;
+        sy += p.w * p.y;
+        sxx += p.w * p.x * p.x;
+        sxy += p.w * p.x * p.y;
+        used++;
+    }
+    if (used < 2 || sw <= 0) return null;
+    const denom = sw * sxx - sx * sx;
+    if (Math.abs(denom) < 1e-12) return null;
+    const slope = (sw * sxy - sx * sy) / denom;
+    return { slope, intercept: (sy - slope * sx) / sw };
+}
+
+/** Short name for a bucket's width, for reading a slope as "per week". */
+export const GRANULARITY_UNIT: Record<TimelineGranularity, string> = {
+    day: 'day',
+    week: 'wk',
+    month: 'mo',
+    year: 'yr',
+};
+
 // ---------------------------------------------------------------------------
 // Formatting
 // ---------------------------------------------------------------------------

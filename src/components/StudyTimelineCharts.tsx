@@ -52,6 +52,8 @@ import {
     fitRateAxis,
     retentionOf,
     shareOf,
+    weightedLinearFit,
+    GRANULARITY_UNIT,
     cpmOf,
     secPerCardOf,
     rollUpWithinBudget,
@@ -131,7 +133,7 @@ const fullFormatterFor = (kind: ValueKind) =>
 // ---------------------------------------------------------------------------
 
 interface SeriesDef {
-    key: keyof TimelineBucket;
+    key: string;
     name: string;
     color: string;
     kind: ValueKind;
@@ -152,13 +154,52 @@ interface SeriesDef {
      * visible range. Defaults to summing.
      */
     aggregate?: (view: TimelineBucket[]) => string | null;
+    /**
+     * Counts to weight this series' trend fit by. Defaults to the flashcard reps
+     * behind the bucket — the volume every rate here is measured over.
+     */
+    trendWeightKey?: string;
+    /** Set on the synthesised fits, which are drawn as subordinate marks. */
+    isTrend?: boolean;
 }
+
+/** A bucket plus the synthesised trend values keyed alongside it. */
+type PlotRow = TimelineBucket & Record<string, unknown>;
+
+const readValue = (row: TimelineBucket | PlotRow, key: string): number | null => {
+    const v = (row as Record<string, unknown>)[key];
+    return typeof v === 'number' ? v : null;
+};
 
 const axisOf = (s: SeriesDef) => s.axis ?? 'left';
 const isLine = (s: SeriesDef) => (s.mark ?? 'bar') === 'line';
+const trendKeyOf = (key: string) => `${key}__trend`;
 
 const formatWith = (series: SeriesDef, v: number) =>
     series.format ? series.format(v) : fullFormatterFor(series.kind)(v);
+
+/**
+ * A trend's slope, read as change per bucket — "↑ 1.4 pts/wk". A line without a
+ * magnitude only invites eyeballing one off the pixels.
+ */
+const formatSlope = (
+    series: SeriesDef,
+    slope: number,
+    granularity: TimelineGranularity
+): string => {
+    const unit = GRANULARITY_UNIT[granularity];
+    const size = Math.abs(slope);
+    // Below this the fit is flat to any precision worth printing.
+    if (size < 0.005) return `→ flat`;
+    const arrow = slope > 0 ? '↑' : '↓';
+    const magnitude =
+        series.kind === 'percent'
+            ? `${size.toFixed(size < 1 ? 2 : 1)} pts`
+            : series.format
+            ? series.format(size)
+            : size.toFixed(2);
+    return `${arrow} ${magnitude}/${unit}`;
+};
 
 interface ZoomState {
     startIndex: number | null;
@@ -261,6 +302,7 @@ function TimelineChart({
     series,
     stacked,
     showTotal,
+    trend,
     granularity,
     axisLabels,
     tooltipExtraRows,
@@ -281,6 +323,8 @@ function TimelineChart({
     stacked?: boolean;
     /** Report the bar series' sum in the tooltip and the totals line. */
     showTotal?: boolean;
+    /** Fit and draw a weighted trend through each rate series. */
+    trend?: boolean;
     granularity: TimelineGranularity;
     /**
      * Overrides the y-axis captions, which otherwise list the series measured
@@ -299,9 +343,42 @@ function TimelineChart({
         return data;
     }, [data, zoom.startIndex, zoom.endIndex]);
 
+    // Fit a weighted trend through every rate series, and carry the fitted
+    // values in the plot rows so the axes size themselves around the trend too —
+    // a band fitted to the data alone would clip a line that leaves it.
+    const { plotData, trendSeries, slopeByKey } = useMemo(() => {
+        const fits: SeriesDef[] = [];
+        const slopes: Record<string, number> = {};
+        if (!trend) return { plotData: view as PlotRow[], trendSeries: fits, slopeByKey: slopes };
+
+        const rows: PlotRow[] = view.map((b) => ({ ...b }));
+        for (const x of series) {
+            if (!isLine(x) || !isBanded(x.kind)) continue;
+            const fit = weightedLinearFit(
+                view.map((b, i) => ({
+                    x: i,
+                    y: readValue(b, x.key) ?? NaN,
+                    w: readValue(b, x.trendWeightKey ?? 'cardReps') ?? 0,
+                }))
+            );
+            if (!fit) continue;
+            const tKey = trendKeyOf(x.key);
+            slopes[x.key] = fit.slope;
+            rows.forEach((row, i) => {
+                const v = fit.intercept + fit.slope * i;
+                // A share or a retention outside 0–100 is not a reading anyone
+                // should be shown, however the line was extrapolated.
+                row[tKey] = x.kind === 'percent' ? Math.max(0, Math.min(100, v)) : Math.max(0, v);
+            });
+            fits.push({ ...x, key: tKey, name: `${x.name} trend`, isTrend: true, aggregate: undefined });
+        }
+        return { plotData: rows, trendSeries: fits, slopeByKey: slopes };
+    }, [view, series, trend]);
+
+    const allSeries = [...series, ...trendSeries];
     const bySide = {
-        left: series.filter((x) => axisOf(x) === 'left'),
-        right: series.filter((x) => axisOf(x) === 'right'),
+        left: allSeries.filter((x) => axisOf(x) === 'left'),
+        right: allSeries.filter((x) => axisOf(x) === 'right'),
     };
     // Only bars on the same axis can stack, and only when asked.
     const stackedSide = (side: 'left' | 'right') =>
@@ -311,10 +388,8 @@ function TimelineChart({
         const sides = bySide[side];
         if (sides.length === 0) return null;
         const kind = sides[0].kind;
-        const values = view.flatMap((b) =>
-            sides
-                .map((x) => b[x.key] as number | null)
-                .filter((v): v is number => v != null)
+        const values = plotData.flatMap((b) =>
+            sides.map((x) => readValue(b, x.key)).filter((v): v is number => v != null)
         );
         if (isBanded(kind)) {
             const fit = kind === 'percent' ? fitPercentAxis : fitRateAxis;
@@ -327,10 +402,10 @@ function TimelineChart({
         // Stacked bars have to fit their sum; side-by-side bars, the tallest one.
         const max = Math.max(
             0,
-            ...view.map((b) =>
+            ...plotData.map((b) =>
                 stackedSide(side)
-                    ? sides.reduce((sum, x) => sum + ((b[x.key] as number) ?? 0), 0)
-                    : Math.max(...sides.map((x) => (b[x.key] as number) ?? 0))
+                    ? sides.reduce((sum, x) => sum + (readValue(b, x.key) ?? 0), 0)
+                    : Math.max(...sides.map((x) => readValue(b, x.key) ?? 0))
             )
         );
         const axis = fitAxis(max, kind === 'time' ? 'time' : 'count');
@@ -340,23 +415,26 @@ function TimelineChart({
     const leftAxis = fitSide('left');
     const rightAxis = fitSide('right');
 
-    // One series owns the axis colour; several sharing it get a neutral one.
+    // Trend lines are a restatement of a series already on the axis, so they
+    // never get a say in what the axis is called or coloured.
+    const namedSide = (side: 'left' | 'right') => bySide[side].filter((x) => !x.isTrend);
     const axisColor = (side: 'left' | 'right') =>
-        bySide[side].length === 1 ? bySide[side][0].color : 'var(--rn-clr-content-tertiary)';
+        namedSide(side).length === 1 ? namedSide(side)[0].color : 'var(--rn-clr-content-tertiary)';
 
     const seriesByKey: Record<string, SeriesDef> = {};
-    for (const x of series) seriesByKey[x.key as string] = x;
+    for (const x of series) seriesByKey[x.key] = x;
 
-    const barSeries = series.filter((x) => !isLine(x));
+    const barSeries = allSeries.filter((x) => !isLine(x));
     const lineSeries = series.filter(isLine);
     // A rate chart with nothing to measure would render an empty plot with a
     // silent axis; say so instead. Only rate/percent series can be null — a
     // count of zero is data.
     const noRateData =
-        lineSeries.length > 0 && !view.some((b) => lineSeries.some((x) => b[x.key] != null));
+        lineSeries.length > 0 &&
+        !view.some((b) => lineSeries.some((x) => readValue(b, x.key) != null));
 
     const totalOf = (x: SeriesDef) =>
-        view.reduce((sum, b) => sum + ((b[x.key] as number) ?? 0), 0);
+        view.reduce((sum, b) => sum + (readValue(b, x.key) ?? 0), 0);
 
     const commitZoom = () => {
         const { refAreaLeft, refAreaRight } = zoom;
@@ -390,11 +468,11 @@ function TimelineChart({
     const renderAxis = (side: 'left' | 'right') => {
         const axis = side === 'left' ? leftAxis : rightAxis;
         if (!axis) return null;
-        const own = bySide[side][0];
+        const own = namedSide(side)[0] ?? bySide[side][0];
         // Only a chart with two axes has to say which is which. One axis needs
         // no label — the legend already names everything on it.
         const labelled = !!leftAxis && !!rightAxis;
-        const label = axisLabels?.[side] ?? bySide[side].map((x) => x.name).join(' / ');
+        const label = axisLabels?.[side] ?? namedSide(side).map((x) => x.name).join(' / ');
         return (
             <YAxis
                 yAxisId={side}
@@ -480,7 +558,7 @@ function TimelineChart({
             ) : (
                 <ResponsiveContainer width="100%" height={320} debounce={50}>
                     <ComposedChart
-                        data={view}
+                        data={plotData}
                         margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
                         onMouseDown={(e: any) => {
                             if (e && e.activeLabel) {
@@ -551,20 +629,27 @@ function TimelineChart({
                                 />
                             );
                         })}
-                        {lineSeries.map((x) => (
+                        {allSeries.filter(isLine).map((x) => (
                             <Line
-                                key={x.key as string}
+                                key={x.key}
                                 yAxisId={axisOf(x)}
-                                type="monotone"
-                                dataKey={x.key as string}
+                                // A fit is a straight line by definition; only the
+                                // data itself gets the smoothed interpolation.
+                                type={x.isTrend ? 'linear' : 'monotone'}
+                                dataKey={x.key}
                                 name={x.name}
                                 stroke={x.color}
-                                strokeWidth={2}
+                                strokeWidth={x.isTrend ? 1.5 : 2}
+                                strokeDasharray={x.isTrend ? '6 4' : undefined}
+                                strokeOpacity={x.isTrend ? 0.65 : 1}
                                 // Buckets with nothing to measure stay a gap: joining
                                 // across them would draw a rate that was never observed.
-                                connectNulls={false}
-                                dot={view.length <= 60 ? { r: 2.5 } : false}
-                                activeDot={{ r: 5 }}
+                                connectNulls={x.isTrend}
+                                dot={!x.isTrend && view.length <= 60 ? { r: 2.5 } : false}
+                                activeDot={x.isTrend ? false : { r: 5 }}
+                                // The legend names the data; four more entries
+                                // restating it as trends would only crowd it.
+                                legendType={x.isTrend ? 'none' : 'line'}
                                 isAnimationActive={false}
                             />
                         ))}
@@ -583,9 +668,15 @@ function TimelineChart({
 
             <div className="text-xs mt-1 flex gap-4 flex-wrap" style={{ opacity: 0.75 }}>
                 {series.map((x) => (
-                    <span key={x.key as string}>
+                    <span key={x.key}>
                         <span style={{ color: x.color, fontWeight: 600 }}>{x.name}:</span>{' '}
                         {x.aggregate ? x.aggregate(view) ?? '—' : formatWith(x, totalOf(x))}
+                        {slopeByKey[x.key] !== undefined && (
+                            <span style={{ opacity: 0.7 }}>
+                                {' '}
+                                ({formatSlope(x, slopeByKey[x.key], granularity)})
+                            </span>
+                        )}
                     </span>
                 ))}
                 {showTotal && (
@@ -614,6 +705,8 @@ export function StudyTimelineCharts({
     onGranularityChange,
     stacked,
     onStackedChange,
+    showTrends,
+    onShowTrendsChange,
     accentColor,
 }: {
     days: TimelineDay[];
@@ -621,6 +714,8 @@ export function StudyTimelineCharts({
     onGranularityChange: (g: TimelineGranularity) => void;
     stacked: boolean;
     onStackedChange: (stacked: boolean) => void;
+    showTrends: boolean;
+    onShowTrendsChange: (show: boolean) => void;
     accentColor: string;
 }) {
     // Zoom is shared: the charts are four readings of one timeline, so a range
@@ -674,8 +769,23 @@ export function StudyTimelineCharts({
                         </button>
                     ))}
                 </div>
-                <div className="text-xs opacity-60">
-                    Drag across a chart to zoom into a range.
+                <div className="flex items-center gap-4">
+                    <label
+                        className="flex items-center gap-1.5 cursor-pointer text-xs whitespace-nowrap"
+                        title="Fit a straight line through Retention, Speed and each answer grade, weighted by the reps behind every bucket, and report its slope per bucket."
+                    >
+                        <input
+                            type="checkbox"
+                            checked={showTrends}
+                            onChange={(e) => onShowTrendsChange(e.target.checked)}
+                            className="form-checkbox h-3.5 w-3.5"
+                            style={{ accentColor }}
+                        />
+                        <span className="opacity-80">Trend lines</span>
+                    </label>
+                    <div className="text-xs opacity-60">
+                        Drag across a chart to zoom into a range.
+                    </div>
                 </div>
             </div>
 
@@ -777,6 +887,7 @@ export function StudyTimelineCharts({
                                 faint: true,
                             },
                         ]}
+                        trend={showTrends}
                         granularity={effectiveGranularity}
                         zoom={zoom}
                         setZoom={setZoom}
@@ -820,6 +931,7 @@ export function StudyTimelineCharts({
                                 faint: true,
                             },
                         ]}
+                        trend={showTrends}
                         granularity={effectiveGranularity}
                         zoom={zoom}
                         setZoom={setZoom}
@@ -851,6 +963,7 @@ export function StudyTimelineCharts({
                             ratingSeries('pctGood', 'cardGood', 'Good', GOOD_COLOR, 'right'),
                             ratingSeries('pctEasy', 'cardEasy', 'Easy', EASY_COLOR, 'left'),
                         ]}
+                        trend={showTrends}
                         granularity={effectiveGranularity}
                         tooltipExtraRows={(b) => [
                             {

@@ -1961,6 +1961,9 @@ function StudyDashboardPopup() {
     const [granularity, setGranularity] = useState<TimelineGranularity>('day');
     // Stacked by default: the bar height then *is* the bucket's total time.
     const [stackedTime, setStackedTime] = useState(true);
+    // Trend lines start off: they are an overlay on the rate charts, and the
+    // data should be what you see first.
+    const [showTrends, setShowTrends] = useState(false);
     const [scope, setScope] = useState<ScopeMode>('comprehensive');
     const [period, setPeriod] = useState<Period>('thisYear');
     const [customStart, setCustomStart] = useState('');
@@ -2014,6 +2017,7 @@ function StudyDashboardPopup() {
                 tab?: DashboardTab;
                 granularity?: TimelineGranularity;
                 stackedTime?: boolean;
+                showTrends?: boolean;
             } | null>(studyDashboardLastPeriodKey)
             .then((saved) => {
                 if (cancelled) return;
@@ -2031,6 +2035,7 @@ function StudyDashboardPopup() {
                     setGranularity(saved.granularity);
                 }
                 if (typeof saved?.stackedTime === 'boolean') setStackedTime(saved.stackedTime);
+                if (typeof saved?.showTrends === 'boolean') setShowTrends(saved.showTrends);
             })
             .catch(() => {})
             .finally(() => {
@@ -2052,9 +2057,20 @@ function StudyDashboardPopup() {
                 tab,
                 granularity,
                 stackedTime,
+                showTrends,
             })
             .catch(() => {});
-    }, [plugin, period, customStart, customEnd, ignorePreReset, tab, granularity, stackedTime]);
+    }, [
+        plugin,
+        period,
+        customStart,
+        customEnd,
+        ignorePreReset,
+        tab,
+        granularity,
+        stackedTime,
+        showTrends,
+    ]);
 
     const cardCapMs = useRunAsync(async () => {
         return (await getIESetting(plugin, flashcardResponseTimeLimitId)) * 1000;
@@ -2565,6 +2581,8 @@ function StudyDashboardPopup() {
                                 onGranularityChange={setGranularity}
                                 stacked={stackedTime}
                                 onStackedChange={setStackedTime}
+                                showTrends={showTrends}
+                                onShowTrendsChange={setShowTrends}
                                 accentColor={ACCENT_COLOR}
                             />
                         )}
