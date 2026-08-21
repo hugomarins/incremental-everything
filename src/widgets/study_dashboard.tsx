@@ -315,7 +315,14 @@ function buildTimelineDays(
         const key = d.getTime();
         let bucket = byDay.get(key);
         if (!bucket) {
-            bucket = { startMs: key, cardReps: 0, incReps: 0, cardTimeMs: 0, incTimeMs: 0 };
+            bucket = {
+                startMs: key,
+                cardReps: 0,
+                cardForgot: 0,
+                incReps: 0,
+                cardTimeMs: 0,
+                incTimeMs: 0,
+            };
             byDay.set(key, bucket);
         }
         return bucket;
@@ -341,6 +348,7 @@ function buildTimelineDays(
                 const b = dayBucket(rep.date);
                 b.cardReps += 1;
                 b.cardTimeMs += Math.min(Math.max(0, rep.responseTime || 0), cardCapMs);
+                if (rep.score === QueueInteractionScore.AGAIN) b.cardForgot += 1;
             }
         }
     }

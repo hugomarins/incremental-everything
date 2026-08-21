@@ -16,6 +16,8 @@ import { formatDuration } from './utils';
 export interface TimelineDay {
     startMs: number;
     cardReps: number;
+    /** Card reps graded AGAIN — what retention is measured against. */
+    cardForgot: number;
     incReps: number;
     cardTimeMs: number;
     incTimeMs: number;
@@ -35,9 +37,22 @@ export interface TimelineBucket {
     label: string; // what the tick actually renders
     startMs: number;
     cardReps: number;
+    cardForgot: number;
     incReps: number;
     cardTimeMs: number;
     incTimeMs: number;
+    /**
+     * Percentage of this bucket's card reps that were *not* graded AGAIN, or
+     * null when the bucket holds no card reps — a bucket you did not study has
+     * no retention, which is not the same as 0%.
+     *
+     * Taken from the bucket's summed reps rather than by averaging the days
+     * inside it, so a day with 3 reps cannot outweigh a day with 300.
+     */
+    retention: number | null;
+    /** Flashcard review speed, in both units — null with nothing to measure. */
+    speedCpm: number | null;
+    speedSecPerCard: number | null;
 }
 
 /**
@@ -96,6 +111,7 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
         const acc = byStart.get(s);
         if (acc) {
             acc.cardReps += day.cardReps;
+            acc.cardForgot += day.cardForgot;
             acc.incReps += day.incReps;
             acc.cardTimeMs += day.cardTimeMs;
             acc.incTimeMs += day.incTimeMs;
@@ -119,13 +135,38 @@ export function rollUp(days: TimelineDay[], gran: TimelineGranularity): Timeline
             label: bucketLabel(cur, gran, multiYear),
             startMs: cur,
             cardReps: d?.cardReps ?? 0,
+            cardForgot: d?.cardForgot ?? 0,
             incReps: d?.incReps ?? 0,
             cardTimeMs: d?.cardTimeMs ?? 0,
             incTimeMs: d?.incTimeMs ?? 0,
+            retention: retentionOf(d?.cardReps ?? 0, d?.cardForgot ?? 0),
+            speedCpm: cpmOf(d?.cardReps ?? 0, d?.cardTimeMs ?? 0),
+            speedSecPerCard: secPerCardOf(d?.cardReps ?? 0, d?.cardTimeMs ?? 0),
         });
         cur = nextBucketStart(cur, gran);
     }
     return buckets;
+}
+
+/**
+ * Share of reps that were not graded AGAIN, as a percentage — the same figure
+ * the Summary's "Ret." column reports. Null with no reps to measure.
+ */
+export function retentionOf(cardReps: number, cardForgot: number): number | null {
+    if (cardReps <= 0) return null;
+    return (Math.max(0, cardReps - cardForgot) / cardReps) * 100;
+}
+
+/** Cards per minute over a bucket's own reps and time. Null with nothing to measure. */
+export function cpmOf(cardReps: number, cardTimeMs: number): number | null {
+    if (cardReps <= 0 || cardTimeMs <= 0) return null;
+    return cardReps / (cardTimeMs / 60000);
+}
+
+/** The same speed the other way round: seconds spent per card. */
+export function secPerCardOf(cardReps: number, cardTimeMs: number): number | null {
+    if (cardReps <= 0 || cardTimeMs <= 0) return null;
+    return cardTimeMs / 1000 / cardReps;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +222,124 @@ export function fitAxis(
     return { max, ticks };
 }
 
+/** Percentage axes read in fives; anything finer is noise on a retention curve. */
+const PERCENT_STEPS = [1, 2, 5, 10, 20, 25, 50];
+
+/** 1, 2, 5 × 10ⁿ without the integer floor — a cpm axis needs 0.5 steps. */
+function niceStepUnclamped(range: number, targetTicks: number): number {
+    const raw = Math.max(range, 1e-9) / targetTicks;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    const step = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+    return step * mag;
+}
+
+const roundTo = (v: number, decimals: number) => {
+    const f = Math.pow(10, decimals);
+    return Math.round(v * f) / f;
+};
+
+/**
+ * Fit an axis to a band around the data rather than to a zero baseline.
+ *
+ * Rates and percentages are not quantities that accumulate from zero: retention
+ * lives between 85% and 100%, review speed between 2 and 4 cards a minute. Drawn
+ * against zero, their entire range is squeezed into the top sliver of the plot
+ * and every real movement flattens into a straight line. So the domain is the
+ * data's own span plus a margin, and the *ticks* — not the domain edges — are
+ * the round numbers: snapping the edges to a step is what re-opens the gap the
+ * band was meant to close.
+ *
+ * This is the same reasoning as the Priority Shield graphs' "Optimize Priorities
+ * Zoom", which pads the visible min/max by 5 points.
+ */
+function fitBandAxis(
+    minValue: number,
+    maxValue: number,
+    opts: {
+        targetTicks: number;
+        /** Hard limits the data cannot exceed (percentages stop at 0 and 100). */
+        clampMin?: number;
+        clampMax?: number;
+        /** Restricts steps to a ladder, e.g. multiples of 5 for percentages. */
+        steps?: number[];
+        decimals: number;
+        /** Minimum band width, so a flat series still gets a plot to sit in. */
+        minSpan: number;
+    }
+): { min: number; max: number; ticks: number[] } {
+    const { targetTicks, clampMin, clampMax, steps, decimals, minSpan } = opts;
+    let span = Math.max(maxValue - minValue, minSpan);
+    const pad = span * 0.15;
+    let lo = minValue - pad;
+    let hi = maxValue + pad;
+    if (hi - lo < minSpan) {
+        const mid = (hi + lo) / 2;
+        lo = mid - minSpan / 2;
+        hi = mid + minSpan / 2;
+    }
+    if (clampMin !== undefined) lo = Math.max(clampMin, lo);
+    if (clampMax !== undefined) hi = Math.min(clampMax, hi);
+    span = hi - lo;
+
+    const step = steps
+        ? steps.find((c) => span / c <= targetTicks) ?? steps[steps.length - 1]
+        : niceStepUnclamped(span, targetTicks);
+
+    const ticks: number[] = [];
+    const first = Math.ceil(lo / step) * step;
+    for (let i = 0; first + i * step <= hi + step / 1e6; i++) {
+        ticks.push(roundTo(first + i * step, decimals));
+    }
+    // A band too narrow to contain two round ticks labels its own edges instead.
+    if (ticks.length < 2) {
+        return {
+            min: roundTo(lo, decimals),
+            max: roundTo(hi, decimals),
+            ticks: [roundTo(lo, decimals), roundTo((lo + hi) / 2, decimals), roundTo(hi, decimals)],
+        };
+    }
+    return { min: roundTo(lo, decimals), max: roundTo(hi, decimals), ticks };
+}
+
+/** Band-fit a percentage series (retention), never leaving 0–100. */
+export function fitPercentAxis(
+    minValue: number,
+    maxValue: number,
+    // Higher than the rate axis on purpose: a retention band is narrow, and too
+    // few gridlines make a 3-point swing impossible to read off.
+    targetTicks = 6
+): { min: number; max: number; ticks: number[] } {
+    if (!isFinite(minValue) || !isFinite(maxValue)) {
+        return { min: 0, max: 100, ticks: [0, 25, 50, 75, 100] };
+    }
+    return fitBandAxis(minValue, maxValue, {
+        targetTicks,
+        clampMin: 0,
+        clampMax: 100,
+        steps: PERCENT_STEPS,
+        decimals: 0,
+        minSpan: 10,
+    });
+}
+
+/** Band-fit a rate series (cards/min, seconds/card). Floors at zero. */
+export function fitRateAxis(
+    minValue: number,
+    maxValue: number,
+    targetTicks = 5
+): { min: number; max: number; ticks: number[] } {
+    if (!isFinite(minValue) || !isFinite(maxValue)) {
+        return { min: 0, max: 1, ticks: [0, 0.5, 1] };
+    }
+    return fitBandAxis(minValue, maxValue, {
+        targetTicks,
+        clampMin: 0,
+        decimals: 3,
+        minSpan: Math.max(maxValue, 1) * 0.1,
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Formatting
 // ---------------------------------------------------------------------------
@@ -202,6 +361,18 @@ export function formatTimeFull(ms: number): string {
 
 export function formatCount(n: number): string {
     return n.toLocaleString();
+}
+
+export function formatPercent(v: number): string {
+    return `${Math.round(v)}%`;
+}
+
+export function formatCpm(v: number): string {
+    return `${v.toFixed(1)}`;
+}
+
+export function formatSecPerCard(v: number): string {
+    return v >= 100 ? `${Math.round(v)}s` : `${v.toFixed(1)}s`;
 }
 
 /**

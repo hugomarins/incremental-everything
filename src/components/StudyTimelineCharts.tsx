@@ -4,6 +4,8 @@
  * Two synchronized timeline charts over the dashboard's selected period:
  *   1. Reviews — flashcard reps (left axis) vs IncRem reps (right axis)
  *   2. Time    — flashcard time vs IncRem time, stacked or side by side
+ *   3. Retention — the Summary's "Ret." column over time, on its reps
+ *   4. Speed     — the Summary's cpm column over time, on its reps
  *
  * Flashcard *counts* dwarf IncRem counts in a typical KB, so the Reviews chart
  * gives each series its own y-axis; the times are comparable, so that chart
@@ -20,11 +22,13 @@
  * granularity switch free of any recompute over the KB.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocalStorageState } from '@remnote/plugin-sdk';
 import {
     Bar,
     CartesianGrid,
     ComposedChart,
     Legend,
+    Line,
     ReferenceArea,
     ResponsiveContainer,
     Tooltip,
@@ -37,9 +41,17 @@ import {
     TimelineGranularity,
     TIMELINE_GRANULARITIES,
     formatCount,
+    formatCpm,
+    formatPercent,
+    formatSecPerCard,
     formatTimeFull,
     formatTimeTick,
     fitAxis,
+    fitPercentAxis,
+    fitRateAxis,
+    retentionOf,
+    cpmOf,
+    secPerCardOf,
     rollUpWithinBudget,
 } from '../lib/study_timeline';
 
@@ -49,6 +61,34 @@ export { TIMELINE_GRANULARITIES };
 const CARD_COLOR = '#ef4444';
 const INC_COLOR = '#3b82f6';
 const TOTAL_COLOR = '#8b5cf6';
+const RETENTION_COLOR = '#16a34a';
+const SPEED_COLOR = '#0891b2';
+
+/**
+ * Unit for the Speed chart. Shares the Practiced Queues summary table's storage
+ * key on purpose: one speed unit for the whole plugin, per device.
+ */
+type SpeedUnit = 'cpm' | 'spc';
+const SPEED_UNIT_KEY = 'summarySpeedUnit';
+
+const sumOf = (view: TimelineBucket[], key: 'cardReps' | 'cardForgot' | 'cardTimeMs') =>
+    view.reduce((total, b) => total + b[key], 0);
+
+const formatOrDash = (v: number | null, format: (n: number) => string) =>
+    v == null ? null : format(v);
+
+/**
+ * How a series' numbers are read. Counts and times grow from a zero baseline;
+ * percentages and rates are fitted to a band around their values instead.
+ */
+type ValueKind = 'count' | 'time' | 'percent' | 'rate';
+
+const isBanded = (kind: ValueKind) => kind === 'percent' || kind === 'rate';
+
+const tickFormatterFor = (kind: ValueKind) =>
+    kind === 'count' ? formatCount : kind === 'time' ? formatTimeTick : formatPercent;
+const fullFormatterFor = (kind: ValueKind) =>
+    kind === 'count' ? formatCount : kind === 'time' ? formatTimeFull : formatPercent;
 
 // ---------------------------------------------------------------------------
 // Chart
@@ -58,7 +98,13 @@ interface SeriesDef {
     key: keyof TimelineBucket;
     name: string;
     color: string;
+    kind: ValueKind;
+    /** Overrides the kind's default formatting — a rate can be cpm or s/card. */
+    format?: (v: number) => string;
 }
+
+const formatWith = (series: SeriesDef, v: number) =>
+    series.format ? series.format(v) : fullFormatterFor(series.kind)(v);
 
 interface ZoomState {
     startIndex: number | null;
@@ -77,20 +123,22 @@ const EMPTY_ZOOM: ZoomState = {
 function ChartTooltip({
     active,
     payload,
-    kind,
+    seriesByKey,
     granularity,
     showTotal,
+    totalKind,
 }: {
     active?: boolean;
     payload?: any[];
-    kind: 'count' | 'time';
+    /** Each series formats itself — a chart can mix a rate and a count. */
+    seriesByKey: Record<string, SeriesDef>;
     granularity: TimelineGranularity;
     showTotal: boolean;
+    totalKind?: ValueKind;
 }) {
     if (!active || !payload || payload.length === 0) return null;
     const bucket = payload[0]?.payload as TimelineBucket | undefined;
     if (!bucket) return null;
-    const fmt = kind === 'count' ? formatCount : formatTimeFull;
     return (
         <div
             style={{
@@ -107,11 +155,15 @@ function ChartTooltip({
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
                 {granularity === 'week' ? `Week of ${bucket.label}` : bucket.label}
             </div>
-            {payload.map((p: any) => (
-                <div key={p.dataKey} style={{ color: p.color, fontWeight: 600 }}>
-                    {p.name}: {fmt(p.value || 0)}
-                </div>
-            ))}
+            {payload.map((p: any) => {
+                const series = seriesByKey[p.dataKey];
+                return (
+                    <div key={p.dataKey} style={{ color: p.color, fontWeight: 600 }}>
+                        {p.name}:{' '}
+                        {p.value == null || !series ? '—' : formatWith(series, p.value)}
+                    </div>
+                );
+            })}
             {showTotal && payload.length > 1 && (
                 <div
                     style={{
@@ -122,7 +174,10 @@ function ChartTooltip({
                         borderTop: '1px solid var(--rn-clr-border-primary)',
                     }}
                 >
-                    Total: {fmt(payload.reduce((sum: number, p: any) => sum + (p.value || 0), 0))}
+                    Total:{' '}
+                    {fullFormatterFor(totalKind ?? 'count')(
+                        payload.reduce((sum: number, p: any) => sum + (p.value || 0), 0)
+                    )}
                 </div>
             )}
         </div>
@@ -133,13 +188,14 @@ function TimelineChart({
     title,
     subtitle,
     data,
-    kind,
     leftSeries,
     rightSeries,
+    leftAsLine,
     dualAxis,
     stacked,
     showTotal,
     granularity,
+    leftAggregate,
     zoom,
     setZoom,
     headerExtra,
@@ -147,9 +203,13 @@ function TimelineChart({
     title: string;
     subtitle: string;
     data: TimelineBucket[];
-    kind: 'count' | 'time';
     leftSeries: SeriesDef;
     rightSeries: SeriesDef;
+    /**
+     * Draw the left series as a line instead of a bar. Rates are not quantities
+     * that stack up from zero, so a bar would misrepresent them.
+     */
+    leftAsLine?: boolean;
     /** false = every series shares the left axis (comparable magnitudes). */
     dualAxis: boolean;
     /** Single-axis only: stack the two series so the bar height is their total. */
@@ -157,6 +217,12 @@ function TimelineChart({
     /** Report the two series' sum in the tooltip and the totals line. */
     showTotal?: boolean;
     granularity: TimelineGranularity;
+    /**
+     * Replaces the left series' figure in the totals line. A rate over a range
+     * is not the sum of its buckets — it has to be recomputed from the reps and
+     * time inside them.
+     */
+    leftAggregate?: (view: TimelineBucket[]) => string | null;
     zoom: ZoomState;
     setZoom: React.Dispatch<React.SetStateAction<ZoomState>>;
     headerExtra?: React.ReactNode;
@@ -171,23 +237,42 @@ function TimelineChart({
     // On a single axis both series share one ceiling — the sum of the two when
     // they are stacked, the taller of the two when they sit side by side.
     const isStacked = !dualAxis && !!stacked;
+    const leftValues = view
+        .map((b) => b[leftSeries.key] as number | null)
+        .filter((v): v is number => v != null);
     const leftMax = Math.max(
         0,
         ...view.map((b) => {
-            const left = b[leftSeries.key] as number;
-            const right = b[rightSeries.key] as number;
+            const left = (b[leftSeries.key] as number) ?? 0;
+            const right = (b[rightSeries.key] as number) ?? 0;
             if (dualAxis) return left;
             return isStacked ? left + right : Math.max(left, right);
         })
     );
-    const rightMax = Math.max(0, ...view.map((b) => b[rightSeries.key] as number));
-    const leftAxis = fitAxis(leftMax, kind);
-    const rightAxis = fitAxis(rightMax, kind);
+    const rightMax = Math.max(0, ...view.map((b) => (b[rightSeries.key] as number) ?? 0));
+
+    // Percentages and rates are fitted to a band around their values; counts
+    // and times grow from a zero baseline.
+    const leftBandAxis = !isBanded(leftSeries.kind)
+        ? null
+        : (leftSeries.kind === 'percent' ? fitPercentAxis : fitRateAxis)(
+              leftValues.length ? Math.min(...leftValues) : 0,
+              leftValues.length ? Math.max(...leftValues) : leftSeries.kind === 'percent' ? 100 : 1
+          );
+    const leftCountAxis = fitAxis(leftMax, leftSeries.kind === 'time' ? 'time' : 'count');
+    const leftDomain: [number, number] = leftBandAxis
+        ? [leftBandAxis.min, leftBandAxis.max]
+        : [0, leftCountAxis.max];
+    const leftTicks = leftBandAxis ? leftBandAxis.ticks : leftCountAxis.ticks;
+    const rightAxis = fitAxis(rightMax, rightSeries.kind === 'time' ? 'time' : 'count');
     const rightAxisId = dualAxis ? 'right' : 'left';
 
-    const leftTotal = view.reduce((sum, b) => sum + (b[leftSeries.key] as number), 0);
-    const rightTotal = view.reduce((sum, b) => sum + (b[rightSeries.key] as number), 0);
-    const fmt = kind === 'count' ? formatCount : formatTimeFull;
+    const leftTotal = view.reduce((sum, b) => sum + ((b[leftSeries.key] as number) ?? 0), 0);
+    const rightTotal = view.reduce((sum, b) => sum + ((b[rightSeries.key] as number) ?? 0), 0);
+    const seriesByKey: Record<string, SeriesDef> = {
+        [leftSeries.key as string]: leftSeries,
+        [rightSeries.key as string]: rightSeries,
+    };
 
     const commitZoom = () => {
         const { refAreaLeft, refAreaRight } = zoom;
@@ -212,6 +297,11 @@ function TimelineChart({
             endIndex: offset + right,
         });
     };
+
+    // A rate chart with nothing to measure would render an empty plot with a
+    // silent axis; say so instead. Only rate/percent series can be null — a
+    // count of zero is data.
+    const noRateData = !!leftAsLine && !view.some((b) => b[leftSeries.key] != null);
 
     const tickFormatter = (key: string) => {
         const b = view.find((x) => x.key === key);
@@ -253,6 +343,22 @@ function TimelineChart({
                 </div>
             </div>
 
+            {noRateData ? (
+                <div
+                    style={{
+                        height: 120,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 12,
+                        color: 'var(--rn-clr-content-tertiary)',
+                        border: '1px dashed var(--rn-clr-border-primary)',
+                        borderRadius: 8,
+                    }}
+                >
+                    No flashcard reviews in this range.
+                </div>
+            ) : (
             <ResponsiveContainer width="100%" height={320} debounce={50}>
                 <ComposedChart
                     data={view}
@@ -293,11 +399,16 @@ function TimelineChart({
                         yAxisId="left"
                         orientation="left"
                         stroke={leftSeries.color}
-                        domain={[0, leftAxis.max]}
-                        ticks={leftAxis.ticks}
-                        tickFormatter={kind === 'count' ? formatCount : formatTimeTick}
+                        domain={leftDomain}
+                        ticks={leftTicks}
+                        tickFormatter={(v: number) =>
+                            leftSeries.format
+                                ? leftSeries.format(v)
+                                : tickFormatterFor(leftSeries.kind)(v)
+                        }
                         tick={{ fontSize: 10 }}
                         width={48}
+                        allowDataOverflow
                     />
                     {dualAxis && (
                         <YAxis
@@ -306,7 +417,7 @@ function TimelineChart({
                             stroke={rightSeries.color}
                             domain={[0, rightAxis.max]}
                             ticks={rightAxis.ticks}
-                            tickFormatter={kind === 'count' ? formatCount : formatTimeTick}
+                            tickFormatter={tickFormatterFor(rightSeries.kind)}
                             tick={{ fontSize: 10 }}
                             width={48}
                         />
@@ -314,31 +425,52 @@ function TimelineChart({
                     <Tooltip
                         content={
                             <ChartTooltip
-                                kind={kind}
+                                seriesByKey={seriesByKey}
                                 granularity={granularity}
                                 showTotal={!!showTotal}
+                                totalKind={leftSeries.kind}
                             />
                         }
                         cursor={{ fill: 'rgba(128,128,128,0.12)' }}
                     />
                     <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
-                    <Bar
-                        yAxisId="left"
-                        stackId={isStacked ? 'stack' : undefined}
-                        dataKey={leftSeries.key as string}
-                        name={leftSeries.name}
-                        fill={leftSeries.color}
-                        // Only the top of a stack gets rounded corners, or the
-                        // segments read as separate bars sitting on each other.
-                        radius={isStacked ? undefined : [2, 2, 0, 0]}
-                        isAnimationActive={false}
-                    />
+                    {leftAsLine ? (
+                        <Line
+                            yAxisId="left"
+                            type="monotone"
+                            dataKey={leftSeries.key as string}
+                            name={leftSeries.name}
+                            stroke={leftSeries.color}
+                            strokeWidth={2}
+                            // Buckets with nothing to measure stay a gap: joining
+                            // across them would draw a rate that was never observed.
+                            connectNulls={false}
+                            dot={view.length <= 60 ? { r: 2.5 } : false}
+                            activeDot={{ r: 5 }}
+                            isAnimationActive={false}
+                        />
+                    ) : (
+                        <Bar
+                            yAxisId="left"
+                            stackId={isStacked ? 'stack' : undefined}
+                            dataKey={leftSeries.key as string}
+                            name={leftSeries.name}
+                            fill={leftSeries.color}
+                            // Only the top of a stack gets rounded corners, or the
+                            // segments read as separate bars sitting on each other.
+                            radius={isStacked ? undefined : [2, 2, 0, 0]}
+                            isAnimationActive={false}
+                        />
+                    )}
                     <Bar
                         yAxisId={rightAxisId}
                         stackId={isStacked ? 'stack' : undefined}
                         dataKey={rightSeries.key as string}
                         name={rightSeries.name}
                         fill={rightSeries.color}
+                        // Backing volume for a rate is context, not the subject —
+                        // it must not out-shout the line in front of it.
+                        fillOpacity={leftAsLine ? 0.3 : 1}
                         radius={[2, 2, 0, 0]}
                         isAnimationActive={false}
                     />
@@ -353,20 +485,25 @@ function TimelineChart({
                     ) : null}
                 </ComposedChart>
             </ResponsiveContainer>
+            )}
 
             <div className="text-xs mt-1 flex gap-4 flex-wrap" style={{ opacity: 0.75 }}>
                 <span>
-                    <span style={{ color: leftSeries.color, fontWeight: 600 }}>{leftSeries.name}:</span>{' '}
-                    {fmt(leftTotal)}
+                    <span style={{ color: leftSeries.color, fontWeight: 600 }}>
+                        {leftSeries.name}:
+                    </span>{' '}
+                    {leftAggregate ? leftAggregate(view) ?? '—' : formatWith(leftSeries, leftTotal)}
                 </span>
                 <span>
-                    <span style={{ color: rightSeries.color, fontWeight: 600 }}>{rightSeries.name}:</span>{' '}
-                    {fmt(rightTotal)}
+                    <span style={{ color: rightSeries.color, fontWeight: 600 }}>
+                        {rightSeries.name}:
+                    </span>{' '}
+                    {formatWith(rightSeries, rightTotal)}
                 </span>
                 {showTotal && (
                     <span>
                         <span style={{ color: TOTAL_COLOR, fontWeight: 600 }}>Total:</span>{' '}
-                        {fmt(leftTotal + rightTotal)}
+                        {fullFormatterFor(leftSeries.kind)(leftTotal + rightTotal)}
                     </span>
                 )}
                 <span style={{ opacity: 0.7 }}>
@@ -396,9 +533,16 @@ export function StudyTimelineCharts({
     onStackedChange: (stacked: boolean) => void;
     accentColor: string;
 }) {
-    // Zoom is shared: the two charts are two readings of one timeline, so a
-    // range picked on either should frame both.
+    // Zoom is shared: the charts are four readings of one timeline, so a range
+    // picked on any of them should frame them all.
     const [zoom, setZoom] = useState<ZoomState>(EMPTY_ZOOM);
+
+    const [storedSpeedUnit, setSpeedUnit] = useLocalStorageState<SpeedUnit>(
+        SPEED_UNIT_KEY,
+        'cpm'
+    );
+    // Guard a stale or garbled stored value so the chart never renders blank.
+    const speedUnit: SpeedUnit = storedSpeedUnit === 'spc' ? 'spc' : 'cpm';
 
     const { buckets, effectiveGranularity } = useMemo(
         () => rollUpWithinBudget(days, granularity),
@@ -470,9 +614,8 @@ export function StudyTimelineCharts({
                         title="Reviews"
                         subtitle="Flashcard reps (left axis) and IncRem reps (right axis) per bucket."
                         data={buckets}
-                        kind="count"
-                        leftSeries={{ key: 'cardReps', name: 'Flashcards', color: CARD_COLOR }}
-                        rightSeries={{ key: 'incReps', name: 'IncRems', color: INC_COLOR }}
+                        leftSeries={{ key: 'cardReps', name: 'Flashcards', color: CARD_COLOR, kind: 'count' }}
+                        rightSeries={{ key: 'incReps', name: 'IncRems', color: INC_COLOR, kind: 'count' }}
                         dualAxis
                         granularity={effectiveGranularity}
                         zoom={zoom}
@@ -486,9 +629,8 @@ export function StudyTimelineCharts({
                                 : 'Flashcard and IncRem time per bucket, side by side on one shared scale.'
                         }
                         data={buckets}
-                        kind="time"
-                        leftSeries={{ key: 'cardTimeMs', name: 'Flashcards', color: CARD_COLOR }}
-                        rightSeries={{ key: 'incTimeMs', name: 'IncRems', color: INC_COLOR }}
+                        leftSeries={{ key: 'cardTimeMs', name: 'Flashcards', color: CARD_COLOR, kind: 'time' }}
+                        rightSeries={{ key: 'incTimeMs', name: 'IncRems', color: INC_COLOR, kind: 'time' }}
                         dualAxis={false}
                         stacked={stacked}
                         showTotal
@@ -509,6 +651,85 @@ export function StudyTimelineCharts({
                                 />
                                 <span className="opacity-80">Stacked</span>
                             </label>
+                        }
+                    />
+                    <TimelineChart
+                        title="Retention"
+                        subtitle="Share of flashcard reps not graded Again, over the reps behind it."
+                        data={buckets}
+                        leftSeries={{
+                            key: 'retention',
+                            name: 'Retention',
+                            color: RETENTION_COLOR,
+                            kind: 'percent',
+                        }}
+                        rightSeries={{
+                            key: 'cardReps',
+                            name: 'Flashcard reps',
+                            color: CARD_COLOR,
+                            kind: 'count',
+                        }}
+                        leftAsLine
+                        dualAxis
+                        granularity={effectiveGranularity}
+                        leftAggregate={(v) =>
+                            formatOrDash(
+                                retentionOf(sumOf(v, 'cardReps'), sumOf(v, 'cardForgot')),
+                                formatPercent
+                            )
+                        }
+                        zoom={zoom}
+                        setZoom={setZoom}
+                    />
+                    <TimelineChart
+                        title="Speed"
+                        subtitle={
+                            speedUnit === 'cpm'
+                                ? 'Flashcards reviewed per minute, over the reps behind it.'
+                                : 'Seconds spent per flashcard, over the reps behind it.'
+                        }
+                        data={buckets}
+                        leftSeries={{
+                            key: speedUnit === 'cpm' ? 'speedCpm' : 'speedSecPerCard',
+                            name: speedUnit === 'cpm' ? 'Speed (cpm)' : 'Speed (s/card)',
+                            color: SPEED_COLOR,
+                            kind: 'rate',
+                            format: speedUnit === 'cpm' ? formatCpm : formatSecPerCard,
+                        }}
+                        rightSeries={{
+                            key: 'cardReps',
+                            name: 'Flashcard reps',
+                            color: CARD_COLOR,
+                            kind: 'count',
+                        }}
+                        leftAsLine
+                        dualAxis
+                        granularity={effectiveGranularity}
+                        leftAggregate={(v) =>
+                            speedUnit === 'cpm'
+                                ? formatOrDash(
+                                      cpmOf(sumOf(v, 'cardReps'), sumOf(v, 'cardTimeMs')),
+                                      formatCpm
+                                  )
+                                : formatOrDash(
+                                      secPerCardOf(sumOf(v, 'cardReps'), sumOf(v, 'cardTimeMs')),
+                                      formatSecPerCard
+                                  )
+                        }
+                        zoom={zoom}
+                        setZoom={setZoom}
+                        headerExtra={
+                            <button
+                                onClick={() => setSpeedUnit(speedUnit === 'cpm' ? 'spc' : 'cpm')}
+                                className="px-1.5 py-0.5 text-[10px] font-medium rounded border rn-clr-border-opaque rn-clr-content-tertiary hover:rn-clr-background-primary transition-colors"
+                                title={
+                                    speedUnit === 'cpm'
+                                        ? 'Showing cards per minute — click for seconds per card'
+                                        : 'Showing seconds per card — click for cards per minute'
+                                }
+                            >
+                                {speedUnit === 'cpm' ? 'cpm' : 's/card'}
+                            </button>
                         }
                     />
                 </>
