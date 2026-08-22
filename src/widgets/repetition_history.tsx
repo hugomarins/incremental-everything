@@ -49,13 +49,14 @@ async function loadPdfPageInfo(plugin: any, rem: any, remId: string): Promise<Pd
         const savedPage = await getIncrementalReadingPosition(plugin, remId, pdfRem._id);
         const currentPage = savedPage && savedPage > 0 ? savedPage : start;
 
-        // Degree of processing: 0% at the range start, 100% at the range end.
+        // Degree of processing. The range is inclusive of both endpoints, so it
+        // spans (end - start + 1) pages, and the page currently open counts as
+        // covered — that way landing on the last page of the range reads 100%
+        // (the reader clamps currentPage to `end`, so it never goes past it).
         // Unbounded ranges (end === 0) have no denominator, so percent is null.
         let percentRead: number | null = null;
-        if (end > start) {
-            percentRead = Math.max(0, Math.min(100, Math.round(((currentPage - start) / (end - start)) * 100)));
-        } else if (end === start) {
-            percentRead = 100;
+        if (end >= start) {
+            percentRead = Math.max(0, Math.min(100, Math.round(((currentPage - start + 1) / (end - start + 1)) * 100)));
         }
 
         const pdfName = await safeRemTextToString(plugin, pdfRem.text);
@@ -1255,8 +1256,8 @@ function RepetitionHistoryPopup() {
                         {pdfPageInfo.percentRead !== null && (
                             <span>
                                 <strong>{pdfPageInfo.percentRead}%</strong> read
-                                {pdfPageInfo.end > pdfPageInfo.start && (
-                                    <> ({pdfPageInfo.currentPage - pdfPageInfo.start}/{pdfPageInfo.end - pdfPageInfo.start}p)</>
+                                {pdfPageInfo.end >= pdfPageInfo.start && (
+                                    <> ({pdfPageInfo.currentPage - pdfPageInfo.start + 1}/{pdfPageInfo.end - pdfPageInfo.start + 1}p)</>
                                 )}
                             </span>
                         )}
