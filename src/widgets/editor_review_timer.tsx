@@ -123,6 +123,43 @@ function EditorReviewTimer() {
     });
   }, [timerData?.remId]);
 
+  // The name the session snapshot carries is only as good as the writer that
+  // parked it. The Execute Repetition popup fills its own name field from an
+  // async lookup, so a fast confirm can hand us an empty string, and the
+  // header then reads "Unnamed Rem" for a rem that plainly has a name. Resolve
+  // it from the rem itself whenever the snapshot is empty or a placeholder —
+  // once per rem, outside the tracker, so an edit to the rem being reviewed
+  // does not re-run the whole session read.
+  const [resolvedName, setResolvedName] = useState<string | null>(null);
+
+  useEffect(() => {
+    const remId = timerData?.remId;
+    const snapshot = timerData?.remName;
+    if (!remId) {
+      setResolvedName(null);
+      return;
+    }
+    if (snapshot && snapshot !== 'Unnamed Rem' && snapshot !== 'Untitled') {
+      setResolvedName(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const rem = await plugin.rem.findOne(remId);
+      if (!rem || cancelled) return;
+      const name = await safeRemTextToString(plugin, rem.text);
+      if (!cancelled && name && name !== 'Untitled') {
+        setResolvedName(name);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [plugin, timerData?.remId, timerData?.remName]);
+
+  /** The rem name to show and to name in toasts — resolution wins over the snapshot. */
+  const reviewName = resolvedName || timerData?.remName || 'Unnamed Rem';
+
   // Auto-scroll to the last bookmark when a timer session starts from the
   // editor popup ("Timer" button). The popup that started the session sets a
   // pending-scroll flag and then closes itself immediately — killing any
@@ -409,7 +446,7 @@ function EditorReviewTimer() {
 
         await updateSRSDataForRem(plugin, timerData.remId, incRem.nextRepDate, updatedHistory);
         await addToIncrementalHistory(plugin, timerData.remId);
-        await plugin.app.toast(`✓ ${timerData.remName}: Repetition updated (${timeDisplay})`);
+        await plugin.app.toast(`✓ ${reviewName}: Repetition updated (${timeDisplay})`);
       } else {
         // Mode 2: Started from Editor command. We need to create the repetition right now.
         // If the user chose "Keep Current Date" in the regression dialog before starting
@@ -444,7 +481,7 @@ function EditorReviewTimer() {
         await updateSRSDataForRem(plugin, timerData.remId, newNextRepDate, newHistory);
         await addToIncrementalHistory(plugin, timerData.remId);
         const dateStr = dayjs(newNextRepDate).format('MMMM D, YYYY');
-        await plugin.app.toast(`✓ ${timerData.remName}: Repetition stored (${timeDisplay}), next review: ${dateStr}`);
+        await plugin.app.toast(`✓ ${reviewName}: Repetition stored (${timeDisplay}), next review: ${dateStr}`);
       }
 
       const updatedIncRem = await getIncrementalRemFromRem(plugin, rem);
@@ -597,7 +634,7 @@ function EditorReviewTimer() {
     await plugin.storage.setSession('editor-review-timer-rem-name', nextRemName || 'Unnamed Rem');
     await plugin.storage.setSession('editor-review-timer-queue-list', newQueueList);
 
-    await plugin.app.toast(`✓ Saved: ${timerData.remName}. Starting: ${nextRemName}`);
+    await plugin.app.toast(`✓ Saved: ${reviewName}. Starting: ${nextRemName}`);
 
     // 4. Open the next rem
     const nextIncRemType = await determineIncRemType(plugin, nextRem);
@@ -665,7 +702,7 @@ function EditorReviewTimer() {
       await plugin.storage.setSession('plugin_operation_active', false);
     }
 
-    await plugin.app.toast(`✓ Dismissed: ${timerData.remName}`);
+    await plugin.app.toast(`✓ Dismissed: ${reviewName}`);
 
     const hasNext = !!(timerData.queueList && timerData.queueList.length > 0);
 
@@ -767,9 +804,9 @@ function EditorReviewTimer() {
   }
 
   // Truncate rem name if too long
-  const displayName = timerData.remName.length > 40
-    ? timerData.remName.substring(0, 37) + '...'
-    : timerData.remName;
+  const displayName = reviewName.length > 40
+    ? reviewName.substring(0, 37) + '...'
+    : reviewName;
 
   return (
     <div

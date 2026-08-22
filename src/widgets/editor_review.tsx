@@ -501,14 +501,20 @@ const EditorReviewInput: React.FC<{
       await plugin.storage.setSession(editorReviewTimerPausedAtKey, undefined);
       await plugin.storage.setSession('editor-review-timer-interval', resolvedInterval);
       await plugin.storage.setSession('editor-review-timer-priority', priority);
-      await plugin.storage.setSession('editor-review-timer-rem-name', remName);
+      // `remName` is filled by the initial-load effect, which a fast confirm
+      // (⌘+Enter on a popup still loading) can outrun — parking the empty
+      // string it starts as is what left the timer widget showing
+      // "Unnamed Rem". Resolve from the rem we already have in hand instead.
+      const timerRemName =
+        remName || (rem ? await safeRemTextToString(plugin, rem.text) : '');
+      await plugin.storage.setSession('editor-review-timer-rem-name', timerRemName);
 
       // If a date override is set (Keep Current Date), store it so the timer handler uses it
       if (dateOverride !== undefined) {
         await plugin.storage.setSession('editor-review-timer-date-override', dateOverride);
       }
 
-      await plugin.app.toast(`⏱️ Timer started for: ${remName}`);
+      await plugin.app.toast(`⏱️ Timer started for: ${timerRemName}`);
 
       // Open the host doc for the non-bookmark cases. When there IS a bookmark,
       // the timer widget's autoscroll effect opens + scrolls via the stashed
