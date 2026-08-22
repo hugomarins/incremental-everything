@@ -794,11 +794,29 @@ async function processDeferredCardPriorityCache(plugin: RNPlugin, untaggedRemIds
             // of manual priorities being lost when importing between knowledge bases —
             // that was traced to RemNote's importer and reproduced with the plugin
             // fully disabled (see the wiki Troubleshooting entry).
-            const existing = await getCardPriority(plugin, rem);
+
+            // The stored value, read alongside — it is what decides whether a
+            // write is redundant, and getCardPriority cannot answer that.
+            //
+            // getCardPriority never returns null for these rems: when nothing is
+            // stored it SYNTHESISES an entry from the ancestor walk (source
+            // 'inherited') or the default setting (source 'default'). Comparing
+            // that against calculateNewPriority compared one derivation with the
+            // same derivation, so `unchanged` was true for essentially every rem
+            // this phase exists to tag — the write never ran, the powerup was
+            // never applied, and the identical set of "untagged rems with cards"
+            // came back at the next startup. 'Update all inherited Card
+            // Priorities' leads its guard with `!hasPowerupTag` instead, which is
+            // why running it by hand did stick.
+            const [storedRaw, existing] = await Promise.all([
+              getRawCardPriorityString(rem),
+              getCardPriority(plugin, rem),
+            ]);
             const calculated = await calculateNewPriority(plugin, rem, existing);
 
             let cardInfo = existing;
             const unchanged =
+              !!storedRaw &&
               existing &&
               existing.priority === calculated.priority &&
               existing.source === calculated.source;
